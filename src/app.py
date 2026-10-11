@@ -17,7 +17,12 @@ _triage_lock = threading.Lock()
 _triage_state = {"running": False, "queue": None}
 MAX_TRIAGE_TICKETS = 500
 # Display name and where each model runs, for the dashboard.
-MODEL_INFO = {"jev": ("Jev", "cloud"), "laya": ("Laya", "local"), "vega": ("Vega", "local")}
+MODEL_INFO = {
+    "jev": ("Jev", "cloud"),
+    "laya": ("Laya", "local"),
+    "vega": ("Vega", "local"),
+    "openai": ("OpenAI", "cloud"),
+}
 
 
 @app.route("/")

@@ -1,5 +1,6 @@
 """Streaming ticket-triage benchmark: the same synthetic ticket set run through
-Jev, Laya and Vega, one call per ticket, scored against known-correct labels.
+Jev, Laya, Vega and the OpenAI Decisions API, one call per ticket, scored against
+known-correct labels.
 
 Each ticket is an independent decision, so both models simply answer the exact
 same state -- no path-dependency to work around. laya.presets.triage_questions()
@@ -21,7 +22,7 @@ from decision_models import get_model
 from laya.presets import triage_questions
 from ticket_gen import generate_ticket
 
-LANES = ("jev", "laya", "vega")
+LANES = ("jev", "laya", "vega", "openai")
 
 
 def _build_questions():
@@ -46,7 +47,11 @@ def _pick_and_confidence(ans, qtype):
     oddly near 50/50 calls. This is always "probability assigned to whatever
     ended up being predicted," consistent across choice/noul/score so
     calibration bucketing means the same thing for all three.
+
+    A refusal (OpenAI may decline a question) predicts nothing: (None, 0.0).
     """
+    if ans["type"] == "refusal":
+        return None, 0.0
     if qtype == "choice":
         predicted = ans["choice"]
         return predicted, ans["probabilities"].get(predicted, 0.0)
@@ -81,6 +86,8 @@ def run_triage_stream(n_tickets, emit, seed=None):
         for name in models
     }
     score_error = {name: {qid: 0.0 for qid in SCORE_QUESTIONS} for name in models}
+    score_n = {name: {qid: 0 for qid in SCORE_QUESTIONS} for name in models}
+    refusals = {name: {qid: 0 for qid in QUESTIONS} for name in models}
     disagreements = {qid: 0 for qid in QUESTIONS}
     disagreement_wins = {qid: {name: 0 for name in models} for qid in QUESTIONS}
     latency_sum = {name: 0.0 for name in models}
@@ -120,17 +127,26 @@ def run_triage_stream(n_tickets, emit, seed=None):
             for name in models:
                 ans = answers[name][qid]
                 predicted, conf = _pick_and_confidence(ans, qtype)
-                hit = predicted == true_val
+                refused = ans["type"] == "refusal"
+                hit = not refused and predicted == true_val
 
+                # A refusal counts as a miss for accuracy but stays out of calibration and
+                # score error, since it carries no probability.
                 totals[name][qid]["n"] += 1
                 totals[name][qid]["hits"] += 1 if hit else 0
-                idx = min(int(conf * N_BINS), N_BINS - 1)
-                calibration[name][qid][idx]["n"] += 1
-                calibration[name][qid][idx]["hits"] += 1 if hit else 0
-                if qtype == "score":
-                    score_error[name][qid] += abs(ans["score"] - true_val)
+                if refused:
+                    refusals[name][qid] += 1
+                else:
+                    idx = min(int(conf * N_BINS), N_BINS - 1)
+                    calibration[name][qid][idx]["n"] += 1
+                    calibration[name][qid][idx]["hits"] += 1 if hit else 0
+                    if qtype == "score":
+                        score_error[name][qid] += abs(ans["score"] - true_val)
+                        score_n[name][qid] += 1
 
                 picks[name] = {"predicted": predicted, "hit": hit, "confidence": round(conf, 4)}
+                if refused:
+                    picks[name]["refused"] = True
 
             disagree = len(set(str(p["predicted"]) for p in picks.values())) > 1
             if disagree:
@@ -154,7 +170,10 @@ def run_triage_stream(n_tickets, emit, seed=None):
         })
 
     mean_error = {
-        name: {qid: round(score_error[name][qid] / n_tickets, 4) for qid in SCORE_QUESTIONS}
+        name: {
+            qid: round(score_error[name][qid] / score_n[name][qid], 4) if score_n[name][qid] else None
+            for qid in SCORE_QUESTIONS
+        }
         for name in models
     }
     avg_latency = {
@@ -172,4 +191,5 @@ def run_triage_stream(n_tickets, emit, seed=None):
         "disagreement_wins": disagreement_wins,
         "avg_latency_ms": avg_latency,
         "token_totals": token_totals,
+        "refusals": refusals,
     })

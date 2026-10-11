@@ -11,6 +11,7 @@
   --jev-color: var(--accent);
   --laya-color: var(--accent-2);
   --vega-color: #d2a8ff;
+  --openai-color: #ffa657;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
 }
 
@@ -143,12 +144,16 @@ header .dim { color: var(--dim); font-weight: 400; }
 
 .scoreboard {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 16px;
   margin-bottom: 14px;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 1100px) {
+  .scoreboard { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 600px) {
   .scoreboard { grid-template-columns: 1fr; }
 }
 
@@ -189,6 +194,7 @@ header .dim { color: var(--dim); font-weight: 400; }
 .score-card[data-lane="jev"] .score-pct { color: var(--jev-color); }
 .score-card[data-lane="laya"] .score-pct { color: var(--laya-color); }
 .score-card[data-lane="vega"] .score-pct { color: var(--vega-color); }
+.score-card[data-lane="openai"] .score-pct { color: var(--openai-color); }
 
 .score-frac { font-size: 12px; color: var(--dim); margin: 4px 0 10px; }
 
@@ -204,6 +210,7 @@ header .dim { color: var(--dim); font-weight: 400; }
 .score-bar-fill.lane-jev { background: var(--jev-color); }
 .score-bar-fill.lane-laya { background: var(--laya-color); }
 .score-bar-fill.lane-vega { background: var(--vega-color); }
+.score-bar-fill.lane-openai { background: var(--openai-color); }
 
 .score-meta {
   display: flex;
@@ -270,6 +277,7 @@ header .dim { color: var(--dim); font-weight: 400; }
 .qtable td.lane-jev { color: var(--jev-color); }
 .qtable td.lane-laya { color: var(--laya-color); }
 .qtable td.lane-vega { color: var(--vega-color); }
+.qtable td.lane-openai { color: var(--openai-color); }
 
 .h2h-cell { font-size: 12px; color: var(--dim); }
 
@@ -306,7 +314,7 @@ header .dim { color: var(--dim); font-weight: 400; }
 
 .ticket-row {
   display: grid;
-  grid-template-columns: 110px repeat(3, 1fr);
+  grid-template-columns: 110px repeat(4, 1fr);
   gap: 8px;
   font-size: 11.5px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

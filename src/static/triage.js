@@ -1,6 +1,6 @@
 (function () {
-  const LANES = ["jev", "laya", "vega"];
-  const NAME = { jev: "Jev", laya: "Laya", vega: "Vega" };
+  const LANES = ["jev", "laya", "vega", "openai"];
+  const NAME = { jev: "Jev", laya: "Laya", vega: "Vega", openai: "OpenAI" };
   const FRUSTRATION_LABELS = ["calm", "concerned", "annoyed", "angry"];
   const IMPACT_LABELS = ["personal", "team", "company"];
 
@@ -98,13 +98,13 @@
     currentTicket = null;
 
     questionIds.forEach((qid) => {
-      LANES.forEach((lane) => (qTotals[lane][qid] = { hits: 0, n: 0 }));
-      const jevCell = document.getElementById(`q-${qid}-jev-acc`);
-      const layaCell = document.getElementById(`q-${qid}-laya-acc`);
+      LANES.forEach((lane) => {
+        qTotals[lane][qid] = { hits: 0, n: 0 };
+        const accCell = document.getElementById(`q-${qid}-${lane}-acc`);
+        if (accCell) accCell.textContent = "—";
+      });
       const disCell = document.getElementById(`q-${qid}-disagree`);
       const h2hCell = document.getElementById(`q-${qid}-h2h`);
-      if (jevCell) jevCell.textContent = "—";
-      if (layaCell) layaCell.textContent = "—";
       if (disCell) disCell.textContent = "0";
       if (h2hCell) h2hCell.textContent = "—";
     });
@@ -200,6 +200,7 @@
   }
 
   function formatPredicted(qid, value) {
+    if (value === null || value === undefined) return "refused";
     if (typeof value === "boolean") return value ? "yes" : "no";
     if (qid === "frustration" && typeof value === "number") {
       return `${value} (${FRUSTRATION_LABELS[value] || ""})`;
@@ -242,7 +243,7 @@
           span.textContent = `${NAME[lane]}: ${formatPredicted(qid, p.predicted)} ${mark} `;
           const conf = document.createElement("span");
           conf.className = "pick-conf";
-          conf.textContent = `(${(p.confidence * 100).toFixed(0)}%)`;
+          conf.textContent = p.refused ? "" : `(${(p.confidence * 100).toFixed(0)}%)`;
           span.appendChild(conf);
         }
         row.appendChild(span);
@@ -317,6 +318,7 @@
           const p = event.picks[lane];
           if (!p) return;
           qTotals[lane][qid] = event.totals[lane];
+          if (p.refused) return;
           confSum[lane] += p.confidence;
           confN[lane] += 1;
         });

@@ -1,9 +1,11 @@
-"""Unified wrapper around the two System-1 decision engines this app compares:
+"""Unified wrapper around the System-1 decision engines this app compares:
 
 - Laya (convaiinnovations/laya-typed-decisions): local weights, loaded once and reused.
 - Jev (typesafe.ai): a cloud API, needs TYPESAFE_API_KEY in the environment.
 - Vega (vegaml, https://github.com/NandhaKishorM/vegaml): local weights (the default 0.8B
   checkpoint), zero-shot "engine" readout, loaded once and reused.
+- OpenAI Decisions API (POST /v1/decisions, public beta): a cloud API, needs OPENAI_API_KEY
+  in the environment. The model defaults to gpt-6-luna; override with OPENAI_DECISIONS_MODEL.
 
 answer(state, questions) -> {qid: normalized_answer} answers general multi-type typed
 questions (choice/score/noul in one call), e.g. laya.presets.triage_questions(),
@@ -12,17 +14,19 @@ model answered:
     choice: {"type": "choice", "choice": str, "probabilities": {opt: float}, "confidence": float}
     score:  {"type": "score", "score": float, "legend": {lvl: str}, "probabilities": {lvl: float}, "confidence": float}
     noul:   {"type": "noul", "noul": float, "confidence": float}
+    refusal: {"type": "refusal"}  (OpenAI only: it may decline a single question)
 After each answer(), `last_usage` holds that call's token counts as reported by the vendor:
 {"input_tokens": int, "output_tokens": int}. The two aren't directly comparable: Laya counts
 every token its encoder processed (one sequence per question, so the message is counted once
-per question), Vega counts the prompt tokens its frozen language model read, and Jev reports
-its own billable tokens.
+per question), Vega counts the prompt tokens its frozen language model read, and Jev and
+OpenAI report their own billable tokens.
 "confidence" is each vendor's own reported field (Jev's noul answers don't ship one, so it's
 computed the same way Laya computes its own: max(noul, 1 - noul)). Callers that want
 "probability the model assigned to what it actually predicted" for calibration purposes
 should derive it from probabilities/noul/score themselves -- see triage_engine.py for why
 the raw vendor confidence field isn't a reliable stand-in for that.
 """
+import json
 import os
 import threading
 
@@ -154,6 +158,65 @@ class VegaModel(DecisionModel):
         return out
 
 
+class OpenAIDecisionsModel(DecisionModel):
+    name = "openai"
+
+    def __init__(self):
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "OpenAI needs an OPENAI_API_KEY. Add it to your .env file, then restart the server."
+            )
+        from openai import OpenAI
+        self.client = OpenAI(api_key=api_key)
+        self.model = os.environ.get("OPENAI_DECISIONS_MODEL", "gpt-6-luna")
+
+    @staticmethod
+    def _to_openai(questions):
+        # Decisions takes an ordered list of named questions: noul is "predicate", choice
+        # options become `choices` and score rubric levels become `levels`.
+        out = []
+        for qid, q in questions.items():
+            item = {"name": qid, "instructions": q["instructions"]}
+            criteria = q.get("criteria") or []
+            if q["type"] == "noul":
+                item["type"] = "predicate"
+            elif q["type"] == "choice":
+                item["type"] = "choice"
+                if isinstance(criteria, dict):
+                    item["choices"] = [{"value": k, "description": v} for k, v in criteria.items()]
+                else:
+                    item["choices"] = [{"value": k} for k in criteria]
+            else:
+                item["type"] = "score"
+                item["levels"] = [{"label": c} for c in criteria]
+            out.append(item)
+        return out
+
+    def answer(self, state, questions):
+        # The questions refer to state keys like `message`, so send the state as JSON.
+        result = self.client.decisions.create(
+            model=self.model,
+            input=json.dumps(state, ensure_ascii=False),
+            questions=self._to_openai(questions),
+        )
+        self.last_usage = _normalize_usage(result.usage.input_tokens, result.usage.output_tokens)
+        out = {}
+        for ans in result.answers:
+            if ans.type == "choice":
+                probs = {p.value: p.probability for p in ans.probabilities}
+                out[ans.name] = _normalize_choice(ans.choice, probs, ans.confidence)
+            elif ans.type == "score":
+                legend = {p.value: p.label for p in ans.probabilities}
+                probs = {p.value: p.probability for p in ans.probabilities}
+                out[ans.name] = _normalize_score(ans.score, legend, probs, ans.confidence)
+            elif ans.type == "predicate":
+                out[ans.name] = _normalize_noul(ans.probability)
+            else:
+                out[ans.name] = {"type": "refusal"}
+        return out
+
+
 def get_model(name):
     if name == "laya":
         return LayaModel()
@@ -161,4 +224,6 @@ def get_model(name):
         return JevModel()
     if name == "vega":
         return VegaModel()
+    if name == "openai":
+        return OpenAIDecisionsModel()
     raise ValueError(f"Unknown decision model: {name}")
