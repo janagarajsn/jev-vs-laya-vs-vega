@@ -3,9 +3,9 @@
 By default it uses the latest full run (no item limit) of each dataset in results/, falling
 back to the latest run of any size when a dataset has no full run:
 
-    python report.py                         # writes ../results/performance_dashboard.jpg
-    python report.py ../results/a.jsonl ...  # only these runs
-    python report.py --out /tmp/board.jpg
+    python src/report.py                         # writes results/performance_dashboard.jpg
+    python src/report.py results/a.jsonl ...     # only these runs
+    python src/report.py --out /tmp/board.jpg
 
 The page is laid out on a 1600-unit-wide canvas (y grows downward) and saved at 2x, so one
 unit is one CSS pixel of the equivalent web page. Every number is recomputed from the

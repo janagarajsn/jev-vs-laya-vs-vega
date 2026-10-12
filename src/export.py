@@ -4,7 +4,7 @@ Sheets: Summary (overall metrics per model), Questions (type-specific metrics pe
 By tag, Items (one row per item: gold answer, each model's prediction, hit and confidence),
 and Confusion (one matrix per choice question and model).
 
-    python export.py ../results/<run>.jsonl    # writes ../results/<run>.xlsx
+    python src/export.py results/<run>.jsonl    # writes results/<run>.xlsx
 """
 import io
 import sys
@@ -198,7 +198,7 @@ def build_workbook(run, records):
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        sys.exit("usage: python export.py <results/run.jsonl>")
+        sys.exit("usage: python src/export.py results/<run>.jsonl")
     src = Path(sys.argv[1])
     run, records = load_run(src)
     out = src.with_suffix(".xlsx")

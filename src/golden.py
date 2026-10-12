@@ -14,7 +14,7 @@ following line is one item:
 Label values: choice -> the option key (str), noul -> bool, score -> level index (int).
 `reviewed` flips to true once a person has checked the item's answer.
 
-Run `python golden.py` from src/ to validate every dataset.
+Run `python src/golden.py` from the project root to validate every dataset.
 """
 import json
 import random

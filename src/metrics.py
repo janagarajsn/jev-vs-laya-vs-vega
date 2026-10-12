@@ -3,7 +3,7 @@
 Everything here is a pure function of (questions, records), so a saved run in results/
 can be rescored without calling any model again:
 
-    python metrics.py ../results/<run>.jsonl
+    python src/metrics.py results/<run>.jsonl
 
 A record is one item: {"id", "tags", "labels": {qid: gold}, "answers": {model: {qid: normalized}},
 "latency_ms": {model: float}, "usage": {model: {"input_tokens", "output_tokens"}}}, where
@@ -268,6 +268,6 @@ def print_report(run, metrics):
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        sys.exit("usage: python metrics.py <results/run.jsonl>")
+        sys.exit("usage: python src/metrics.py results/<run>.jsonl")
     run, records = load_run(sys.argv[1])
     print_report(run, compute(run["questions"], records, run["models"]))

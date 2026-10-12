@@ -11,7 +11,6 @@ from benchmark_engine import LANES, RESULTS_DIR, run_benchmark_stream
 from export import build_workbook
 from golden import list_datasets
 from metrics import load_run
-from report import build_dashboard
 
 dotenv.load_dotenv()
 
@@ -105,17 +104,6 @@ def api_results_xlsx(name):
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{name}.xlsx"'},
     )
-
-
-@app.route("/api/report.jpg")
-def api_report_jpg():
-    # Also saved as results/performance_dashboard.jpg, so the latest one is always on disk.
-    try:
-        data = build_dashboard()
-    except ValueError as exc:
-        return jsonify(error=str(exc)), 404
-    return Response(data, mimetype="image/jpeg",
-                    headers={"Content-Disposition": 'attachment; filename="performance_dashboard.jpg"'})
 
 
 def _prewarm_local_models():

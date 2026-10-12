@@ -27,7 +27,7 @@ One JSON object per line. Line 1 is the header; every other line is an item. The
 
 ## Reviewing
 
-The four hand-written sets (all except `support_triage`) were drafted by Claude and start with `"reviewed": false`. The dashboard shows "N/M reviewed" next to each one until they're all checked. To review an item:
+Every item in all five datasets has been reviewed by a person and is marked `"reviewed": true`. When you add or change an item, set `"reviewed": false`. The dashboard then shows "N/M reviewed" next to that dataset until every item is checked again. To review an item:
 
 1. Read `input` and decide the answer yourself before looking at `labels`.
 2. If you agree, set `"reviewed": true`.
@@ -35,10 +35,10 @@ The four hand-written sets (all except `support_triage`) were drafted by Claude 
 
 `policy_decisions` labels were computed by a script that applies the policy's rules in order, so review there is mainly about whether each case states its facts clearly.
 
-After editing, validate from `src/`:
+After editing, validate from the project root:
 
 ```bash
-python golden.py
+python src/golden.py
 ```
 
 ## Adding a dataset

@@ -15,7 +15,7 @@ All four answer *typed* questions about a piece of text: pick one option (**choi
 
 ## Results
 
-Full runs of all five datasets (500 items, 1,200 scored decisions per model) on 2026-10-12.
+Full runs of all five datasets (500 items, 1,200 scored decisions per model) on 2026-10-12, with Vega's 4B checkpoint.
 
 | Test setup | |
 |---|---|
@@ -28,17 +28,28 @@ Full runs of all five datasets (500 items, 1,200 scored decisions per model) on 
 
 | Dataset | Jev | Laya | Vega | OpenAI |
 |---------|----:|-----:|-----:|-------:|
-| Support ticket triage | 85.5% | 81.7% | 63.5% | 84.3% |
-| Spam detection | 91.0% | 68.0% | 69.0% | 95.0% |
-| Bug severity scoring | 100.0% | 52.0% | 33.0% | 99.0% |
-| Email topic routing | 99.0% | 86.0% | 45.0% | 100.0% |
-| Refund policy decisions | 97.5% | 40.5% | 34.5% | 97.5% |
-| **All decisions** | **90.8%** (1,089) | **70.4%** (845) | **55.5%** (666) | **90.8%** (1,090) |
-| Median latency per call | 159 ms | 31 ms | 82 ms | 234 ms |
+| Support ticket triage | 85.8% | 81.7% | 70.0% | 84.3% |
+| Spam detection | 91.0% | 68.0% | 76.0% | 95.0% |
+| Bug severity scoring | 100.0% | 52.0% | 31.0% | 99.0% |
+| Email topic routing | 99.0% | 86.0% | 61.0% | 100.0% |
+| Refund policy decisions | 97.5% | 40.5% | 84.0% | 97.5% |
+| **All decisions** | **90.9%** (1,091) | **70.4%** (845) | **69.3%** (832) | **90.8%** (1,090) |
+| Median latency per call | 146 ms | 19 ms | 99 ms | 224 ms |
+| p95 latency per call | 238 ms | 26 ms | 220 ms | 394 ms |
+| Accuracy on easy → hard items | 98.6% → 92.5% | 64.9% → 51.2% | 75.3% → 59.5% | 98.3% → 96.0% |
 
 Latencies for Laya and Vega are on the RTX PRO 3000 Blackwell GPU. Jev and OpenAI latencies include the network round trip.
 
-In short: Jev and OpenAI are effectively tied for accuracy, one decision apart. Laya is by far the fastest but trails on tasks that need careful reading, such as applying a written policy or judging bug severity by impact rather than tone. Vega trails on most tasks. The raw answers behind every number are in [results/](results/). Read [Points to note](#points-to-note) before drawing conclusions.
+In short:
+
+- **Jev and OpenAI are effectively tied** for accuracy, one decision apart (1,091 vs 1,090 of 1,200). Both hold up on the deliberately hard items.
+- **Laya and Vega 4B are close overall** (70.4% vs 69.3%) but strong in different places.
+  - Vega 4B applies the written refund policy far better (84.0% vs 40.5%) and is ahead on spam detection.
+  - Laya is ahead on bug severity, topic routing and the support-triage score questions (frustration, impact scope).
+- **Laya is by far the fastest**, at a 19 ms median per call.
+- **Hard items cost the local models the most**: Vega drops 16 points and Laya 14, against 6 for Jev and 2 for OpenAI.
+
+The raw answers behind every number are in [results/](results/). Read [Points to note](#points-to-note) before drawing conclusions.
 
 ## How the comparison works
 
@@ -62,7 +73,7 @@ In short: Jev and OpenAI are effectively tied for accuracy, one decision apart. 
 | Email topic routing | Route an email to one of 7 teams, including emails with another team's keywords | `department` (choice) | 100 |
 | Refund policy decisions | Apply a written refund policy to a case: approve or deny, and which rule decides | `decision`, `reason` (choice) | 100 |
 
-Support ticket triage is synthetic. Each email is assembled from separate phrase banks, and the bank a phrase came from is its label, so the answers are correct by construction. The refund policy answers are computed by applying the policy's rules in order. The spam, severity and routing answers were written by hand with a one-line rationale each. [data/golden/README.md](data/golden/README.md) covers the file format and how to review items.
+Support ticket triage is synthetic. Each email is assembled from separate phrase banks, and the bank a phrase came from is its label, so the answers are correct by construction. The refund policy answers are computed by applying the policy's rules in order. The spam, severity and routing answers were written by hand with a one-line rationale each. Every item in all five datasets has been reviewed by a person. [data/golden/README.md](data/golden/README.md) covers the file format and how to review items.
 
 ### Metrics
 
@@ -150,21 +161,23 @@ When the run finishes, the **Results** panel compares all four models on every m
 
 | Output | How | What you get |
 |--------|-----|--------------|
-| **Excel workbook** | **Download Excel** in the Results panel, or `python export.py ../results/<run>.jsonl` | Sheets for Summary, Questions, By tag, Items (every answer, coloured right or wrong) and Confusion |
+| **Excel workbook** | **Download Excel** in the Results panel, or `python src/export.py results/<run>.jsonl` | Sheets for Summary, Questions, By tag, Items (every answer, coloured right or wrong) and Confusion |
 | **PDF** | **Save as PDF** in the Results panel, then "Save as PDF" in the print dialog | The scoreboard and results on a light, print-friendly page |
-| **Performance dashboard** | **Performance dashboard (JPG)** at the top of the page, or `python report.py` | The one-page image shown under [Results](#results), built from the latest full run of every dataset and saved as `results/performance_dashboard.jpg` |
+| **Performance dashboard** | `python src/report.py` | The one-page image shown under [Results](#results), built from the latest full run of every dataset and saved as `results/performance_dashboard.jpg` |
 
 ### Command-line tools
 
-Run these from `src/`:
+Run these from the project root, with the virtual environment active:
 
 ```bash
-python golden.py                                # validate every dataset and print item / reviewed counts
-python metrics.py ../results/<run>.jsonl        # print every metric for a saved run
-python export.py ../results/<run>.jsonl         # write <run>.xlsx next to the run file
-python report.py                                # write results/performance_dashboard.jpg
-python report.py ../results/a.jsonl ../results/b.jsonl --out board.jpg   # dashboard from chosen runs only
+python src/golden.py                            # validate every dataset and print item / reviewed counts
+python src/metrics.py results/<run>.jsonl       # print every metric for a saved run
+python src/export.py results/<run>.jsonl        # write <run>.xlsx next to the run file
+python src/report.py                            # write results/performance_dashboard.jpg
+python src/report.py results/a.jsonl results/b.jsonl --out board.jpg   # dashboard from chosen runs only
 ```
+
+Run `python src/report.py` after your benchmark runs finish to refresh the performance dashboard.
 
 To run a benchmark without the browser:
 
@@ -176,7 +189,7 @@ curl -N localhost:5050/api/benchmark/stream
 
 ## Points to note
 
-- **The hand-written answers haven't been independently reviewed yet.** The spam, severity, routing and refund policy items are marked `"reviewed": false`, and the dataset picker shows "0/100 reviewed" until a person has checked them. A wrong answer in a dataset counts against every model that gets it right, so treat the results as provisional until review is done. Support ticket triage answers are correct by construction.
+- **Every answer has been reviewed by a person.** All 500 items are marked `"reviewed": true`, so the picker shows no review count. If you add or change items, set `"reviewed": false` until someone has checked them; the picker then shows how many are left. A wrong answer counts against every model that gets it right, so keep new items reviewed before you compare results.
 - **Support ticket triage is template-based.** Its emails are built from phrase banks, so they are more regular than real email. The other four datasets include deliberately tricky items (tag `hard`).
 - **Vega's checkpoint size matters.** The published results use Vega's 4B checkpoint (`VEGA_SIZE=4b`). The 0.8B gives different accuracy and latency, so check `VEGA_SIZE` before comparing your numbers with the published ones.
 - **Local latency depends on your hardware.** The published Laya and Vega latencies were measured on an NVIDIA RTX PRO 3000 Blackwell Generation GPU. Expect different numbers on other GPUs, on Apple Silicon or on the CPU. Jev and OpenAI times include the network round trip, so they also depend on your connection.
@@ -184,7 +197,7 @@ curl -N localhost:5050/api/benchmark/stream
 - **OpenAI's Decisions API is a public beta.** It can decline a single question. A refusal shows as `refused`, counts as a wrong answer and is reported separately. The API's request and response format may still change.
 - **Cloud models cost money.** A full pass of all five datasets is 500 calls to each of Jev and OpenAI.
 - **One run at a time.** Starting a second run while one is in progress returns an error.
-- **What the dashboard image includes.** It uses the latest *full* run of each dataset. A 20- or 50-item run is used only for a dataset with no full run. Clicking the button again overwrites `results/performance_dashboard.jpg`.
+- **What the dashboard image includes.** `python src/report.py` uses the latest *full* run of each dataset. A 20- or 50-item run is used only for a dataset with no full run. Each run of the command overwrites `results/performance_dashboard.jpg`.
 - **Fixed subsets change if items are added.** The 20- and 50-item subsets are picked with a fixed seed, so adding or removing items in a dataset changes which items they contain.
 
 ## Project structure
@@ -222,7 +235,6 @@ curl -N localhost:5050/api/benchmark/stream
 | `POST` | `/api/benchmark/start` | Starts a run. Body: `{"dataset": "<name>", "limit": <n or null for all>}`. Returns `400` for an unknown dataset or invalid limit and `409` if a run is already in progress. |
 | `GET` | `/api/benchmark/stream` | Server-Sent Events stream of the current run |
 | `GET` | `/api/results/<run>.xlsx` | Excel export of a saved run, where `<run>` is the file name in `results/` without `.jsonl`. Returns `404` if there is no such run. |
-| `GET` | `/api/report.jpg` | Performance dashboard across the latest full run of each dataset; also written to `results/performance_dashboard.jpg`. Returns `404` if there are no saved runs. |
 
 ### Stream events
 
@@ -258,9 +270,9 @@ Each SSE message is a JSON object with a `type` field:
 - **"Jev needs a TYPESAFE_API_KEY"** or **"OpenAI needs an OPENAI_API_KEY"**: add the key to `.env` and restart the server. Until then the benchmark runs with the other models.
 - **Slow first run, or "Could not preload Laya" / "Vega"**: check your network connection and `HF_TOKEN`. The weights are downloaded into the Hugging Face cache the first time.
 - **Laya or Vega is slow on a machine with an NVIDIA GPU**: run `nvidia-smi`. If it can't reach the driver, PyTorch falls back to the CPU; fix the driver install, then check `torch.cuda.is_available()`.
-- **A dataset is missing from the picker**: run `python golden.py` from `src/`. It prints why a file failed validation.
+- **A dataset is missing from the picker**: run `python src/golden.py`. It prints why a file failed validation.
 - **"A benchmark run is already in progress"**: wait for the current run to finish.
-- **Performance dashboard returns an error**: there are no saved runs in `results/` yet. Run a benchmark first.
+- **`report.py` says there are no saved runs**: run a benchmark first. The dashboard is built from the `.jsonl` files in `results/`.
 - **Port 5050 already in use**: change `port=` at the bottom of `src/app.py`.
 
 ## Tech stack
