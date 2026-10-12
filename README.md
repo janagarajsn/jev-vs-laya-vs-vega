@@ -61,7 +61,7 @@ The raw answers behind every number are in [results/](results/). Read [Points to
    - **noul**: `true` if the model's probability is ≥ 0.5.
    - **score**: the rubric level with the highest probability, not the rounded expected value, which would pull spread-out answers toward the middle level.
    - **confidence**: the probability the model gave to the value it actually predicted. Vendors' own `confidence` fields are not used, so confidence means the same thing for every model and question type.
-5. **Saved and recomputable.** Every answer is written to `results/<timestamp>-<dataset>.jsonl` as the run goes. All metrics are recomputed from those files, so a finished run can be rescored or exported without calling any model again.
+5. **Saved and recomputable.** Every answer is written to `results/<timestamp>-<dataset>.jsonl` as the run goes, and the file's header records each model's settings (package version, checkpoint and, for Vega, its size and harness options). All metrics are recomputed from those files, so a finished run can be rescored or exported without calling any model again.
 
 ### The datasets
 
@@ -133,6 +133,7 @@ cp .env.example .env
 | `TYPESAFE_API_KEY` | Jev | Get one at [console.typesafe.ai](https://console.typesafe.ai) |
 | `OPENAI_API_KEY` | OpenAI | Needs access to the Decisions API |
 | `VEGA_SIZE` | Vega | Vega's checkpoint size, `0.8b` (the default when unset) or `4b`, passed to `vegaml.load()`. `.env.example` sets `4b`, which matches the published results. Restart the server after changing it; the console prints `[vega] loaded the 4b checkpoint on cuda`. |
+| `VEGA_YES_NO_TEXT`, `VEGA_SCORE_AS_CHOICE`, `VEGA_PLAIN_STATE`, `VEGA_VIEWS` | Vega | Optional harness options, all off by default (the published results use the defaults). See [Tuning the Vega harness](#tuning-the-vega-harness). |
 | `OPENAI_DECISIONS_MODEL` | OpenAI | Optional, not in `.env.example`. Decisions model to use; defaults to `gpt-6-luna`. |
 
 Leave out the key for any cloud model you don't want to run. That model is skipped and the benchmark runs with the rest.
@@ -146,7 +147,7 @@ python app.py
 
 Open **http://localhost:5050**. When the server starts, it loads Laya and Vega in the background, so your first run doesn't wait for them. The console prints `[prewarm] Laya decision model loaded and ready.` and a matching line for Vega.
 
-1. Pick a **dataset**. The button shows its item count and questions.
+1. Pick a **dataset**. The button shows its item count and questions. The second row holds the **dev sets**, used for tuning the harness; their runs are saved to `results/dev/` and never appear in the published results.
 2. Pick how many **items**: 20, 50 or All. 20 and 50 are a fixed subset, the same items every time.
 3. Click **Run benchmark**.
 
@@ -175,6 +176,7 @@ python src/metrics.py results/<run>.jsonl       # print every metric for a saved
 python src/export.py results/<run>.jsonl        # write <run>.xlsx next to the run file
 python src/report.py                            # write results/performance_dashboard.jpg
 python src/report.py results/a.jsonl results/b.jsonl --out board.jpg   # dashboard from chosen runs only
+python src/vega_ablation.py                     # compare Vega harness options on the dev sets (see below)
 ```
 
 Run `python src/report.py` after your benchmark runs finish to refresh the performance dashboard.
@@ -187,11 +189,33 @@ curl -X POST localhost:5050/api/benchmark/start \
 curl -N localhost:5050/api/benchmark/stream
 ```
 
+### Tuning the Vega harness
+
+Vega reads each question's option text as part of its input, so how the wrapper phrases a question affects its answers. [src/decision_models.py](src/decision_models.py) has four harness options, each following [vegaml](https://github.com/NandhaKishorM/vegaml)'s documented usage and each off by default:
+
+| Option | What it changes |
+|--------|-----------------|
+| `VEGA_YES_NO_TEXT=1` | Gives yes/no questions real option text from [data/vega_yes_no_text.json](data/vega_yes_no_text.json), instead of vegaml's generic "the statement holds / does not hold" |
+| `VEGA_SCORE_AS_CHOICE=1` | Asks score questions as a choice between the rubric levels and maps the answer back to the level, instead of vegaml's ordered score scale |
+| `VEGA_PLAIN_STATE=1` | Sends a one-field input as plain text, and several fields as "Key: value" lines, instead of a JSON string |
+| `VEGA_VIEWS=2` or `3` | vegaml's test-time averaging: reads each item again with the options reversed (and, with 3, the input as prose) and averages the answers. About that many times the latency |
+
+To measure them without touching the golden sets:
+
+```bash
+python src/vega_ablation.py                          # baseline, each option alone, and the combinations
+python src/vega_ablation.py --configs yes_no_text views_2
+python src/vega_ablation.py --datasets severity_scoring support_triage
+```
+
+The script runs Vega alone on the dev sets in [data/dev/](data/dev/), which hold about 20 new items per dataset, separate from the golden items. It makes no cloud calls, so it costs nothing to run. It prints accuracy per dataset and per question for each configuration next to the baseline, and saves the run files and a `summary.md` to `results/dev/ablation-<timestamp>/`. Switch on in `.env` only the options that help on the dev sets, then run the golden sets once.
+
 ## Points to note
 
 - **Every answer has been reviewed by a person.** All 500 items are marked `"reviewed": true`, so the picker shows no review count. If you add or change items, set `"reviewed": false` until someone has checked them; the picker then shows how many are left. A wrong answer counts against every model that gets it right, so keep new items reviewed before you compare results.
 - **Support ticket triage is template-based.** Its emails are built from phrase banks, so they are more regular than real email. The other four datasets include deliberately tricky items (tag `hard`).
-- **Vega's checkpoint size matters.** The published results use Vega's 4B checkpoint (`VEGA_SIZE=4b`). The 0.8B gives different accuracy and latency, so check `VEGA_SIZE` before comparing your numbers with the published ones.
+- **Vega's checkpoint size and harness options matter.** The published results use Vega's 4B checkpoint (`VEGA_SIZE=4b`) with every harness option off. Other settings give different accuracy and latency, so check them before comparing your numbers with the published ones. Each run file records the settings it used.
+- **Tune on the dev sets, not the golden sets.** Changing a harness option until a model scores well on the 500 golden items would overstate its results. The dev sets exist so changes can be measured on separate items first.
 - **Local latency depends on your hardware.** The published Laya and Vega latencies were measured on an NVIDIA RTX PRO 3000 Blackwell Generation GPU. Expect different numbers on other GPUs, on Apple Silicon or on the CPU. Jev and OpenAI times include the network round trip, so they also depend on your connection.
 - **Token counts are not comparable across models.** Laya counts every token its encoder processes (the input once per question), Vega counts the prompt tokens it reads, and Jev and OpenAI report their own billable input and output tokens. OpenAI bills input tokens only.
 - **OpenAI's Decisions API is a public beta.** It can decline a single question. A refusal shows as `refused`, counts as a wrong answer and is reported separately. The API's request and response format may still change.
@@ -210,7 +234,10 @@ curl -N localhost:5050/api/benchmark/stream
 ├── .env.example            # Template for .env: copy it and add your keys
 ├── .env                    # Your API keys and settings (not committed)
 ├── data/golden/            # Golden datasets (JSONL) and a guide to reviewing them
-├── results/                # Saved runs (one JSONL per run) and performance_dashboard.jpg
+├── data/dev/               # Dev sets: new items in the same format, for tuning the harness
+├── data/vega_yes_no_text.json  # Yes/no option text for Vega (used when VEGA_YES_NO_TEXT=1)
+├── results/                # Saved golden runs (one JSONL per run) and performance_dashboard.jpg
+├── results/dev/            # Saved dev and ablation runs
 └── src/
     ├── app.py              # Flask server, API routes, Laya/Vega pre-warm on startup
     ├── decision_models.py  # One wrapper per model, translating questions and answers to a common shape
@@ -219,6 +246,7 @@ curl -N localhost:5050/api/benchmark/stream
     ├── metrics.py          # Every metric, computed from saved records (also a CLI)
     ├── export.py           # Excel export of a saved run (also a CLI)
     ├── report.py           # One-page performance dashboard JPG across runs (also a CLI)
+    ├── vega_ablation.py    # Compares Vega harness options on the dev sets (CLI)
     ├── templates/
     │   └── dashboard.html  # Dashboard UI
     └── static/
@@ -231,10 +259,10 @@ curl -N localhost:5050/api/benchmark/stream
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/` | Dashboard UI |
-| `GET` | `/api/datasets` | Available datasets: name, title, item count, reviewed count, questions |
-| `POST` | `/api/benchmark/start` | Starts a run. Body: `{"dataset": "<name>", "limit": <n or null for all>}`. Returns `400` for an unknown dataset or invalid limit and `409` if a run is already in progress. |
+| `GET` | `/api/datasets?split=golden` | Available datasets in a split (`golden`, the default, or `dev`): name, title, item count, reviewed count, questions |
+| `POST` | `/api/benchmark/start` | Starts a run. Body: `{"dataset": "<name>", "split": "golden" or "dev" (optional, default golden), "limit": <n or null for all>}`. Returns `400` for an unknown split, dataset or invalid limit and `409` if a run is already in progress. |
 | `GET` | `/api/benchmark/stream` | Server-Sent Events stream of the current run |
-| `GET` | `/api/results/<run>.xlsx` | Excel export of a saved run, where `<run>` is the file name in `results/` without `.jsonl`. Returns `404` if there is no such run. |
+| `GET` | `/api/results/<run>.xlsx`, `/api/results/dev/<run>.xlsx` | Excel export of a saved run, where `<run>` is the file name in `results/` (or `results/dev/`) without `.jsonl`. Returns `404` if there is no such run. |
 
 ### Stream events
 
@@ -244,7 +272,7 @@ Each SSE message is a JSON object with a `type` field:
 |--------|------|------------|
 | `status` | While models load | `message` |
 | `model_unavailable` | A model failed to load | `model`, `message` |
-| `benchmark_started` | Run begins | `dataset`, `title`, `items`, `models`, `questions`, `score_levels` |
+| `benchmark_started` | Run begins | `dataset`, `split`, `title`, `items`, `models`, `model_config`, `questions`, `score_levels` |
 | `item_start` | Each item | `item`, `total`, `id`, `text`, `tags`, `labels` |
 | `model_error` | A single model call failed (the run continues) | `model`, `item`, `message` |
 | `item_timing` | After all models answer | `latency_ms` per model |

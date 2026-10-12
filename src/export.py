@@ -73,8 +73,12 @@ def build_workbook(run, records):
     ws = wb.active
     ws.title = "Summary"
     ws.cell(row=1, column=1, value=f"{run['title']} benchmark").font = TITLE_FONT
-    info = [("Dataset", run["dataset"]), ("Started", run["started_at"]), ("Items", metrics["items"]),
-            ("Models", ", ".join(lanes))]
+    info = [("Dataset", run["dataset"]), ("Split", run.get("split", "golden")), ("Started", run["started_at"]),
+            ("Items", metrics["items"]), ("Models", ", ".join(lanes))]
+    # Package versions, checkpoint and harness options each model ran with (older runs have none).
+    for m, cfg in (run.get("model_config") or {}).items():
+        if cfg:
+            info.append((f"{NAMES.get(m, m)} settings", ", ".join(f"{k}={v}" for k, v in cfg.items())))
     for i, (k, v) in enumerate(info, start=2):
         ws.cell(row=i, column=1, value=k).font = Font(bold=True)
         ws.cell(row=i, column=2, value=v)
@@ -130,7 +134,7 @@ def build_workbook(run, records):
 
     try:
         texts = {it["id"]: "\n\n".join(str(v) for v in it["input"].values())
-                 for it in load_dataset(run["dataset"])["items"]}
+                 for it in load_dataset(run["dataset"], run.get("split", "golden"))["items"]}
     except DatasetError:
         texts = {}
     ws = wb.create_sheet("Items")

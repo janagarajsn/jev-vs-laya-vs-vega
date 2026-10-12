@@ -30,11 +30,27 @@ the raw vendor confidence field isn't a reliable stand-in for that.
 import json
 import os
 import threading
+from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
 
 _laya_agent = None
 _laya_lock = threading.Lock()
 _vega = None
+_vega_info = {}
 _vega_lock = threading.Lock()
+VEGA_YES_NO_TEXT = Path(__file__).resolve().parent.parent / "data" / "vega_yes_no_text.json"
+
+
+def _pkg_version(name):
+    try:
+        return version(name)
+    except PackageNotFoundError:
+        return None
+
+
+def _env_flag(name, default=False):
+    value = os.environ.get(name)
+    return default if value is None else value.strip().lower() in ("1", "true", "yes", "on")
 
 
 def _normalize_choice(choice, probabilities, confidence):
@@ -66,6 +82,9 @@ def _normalize_usage(input_tokens, output_tokens):
 class DecisionModel:
     name = "base"
     last_usage = None
+    # What produced the answers (package versions, checkpoint, harness options); saved in every
+    # results file so a run says exactly which configuration it measured.
+    config = {}
 
     def answer(self, state, questions):
         raise NotImplementedError
@@ -81,6 +100,7 @@ class LayaModel(DecisionModel):
                 import laya
                 _laya_agent = laya.load("convaiinnovations/laya-typed-decisions")
         self.agent = _laya_agent
+        self.config = {"laya": _pkg_version("laya"), "checkpoint": "convaiinnovations/laya-typed-decisions"}
 
     def answer(self, state, questions):
         result = self.agent.predict(state, questions)
@@ -109,6 +129,7 @@ class JevModel(DecisionModel):
             )
         from typesafe_sdk import TypeSafeClient
         self.client = TypeSafeClient(api_key=api_key)
+        self.config = {"jev": _pkg_version("jev")}
 
     def answer(self, state, questions):
         result = self.client.system_one(state=state, questions=questions)
@@ -126,9 +147,28 @@ class JevModel(DecisionModel):
 
 
 class VegaModel(DecisionModel):
+    """Vega, with harness options that each follow vegaml's documented usage.
+
+    Every option defaults to the plain call (`decide(state, questions)` with our question
+    format), so results stay comparable unless an option is switched on. Set them in .env, or
+    pass them as keyword arguments (the ablation script does):
+
+    - VEGA_YES_NO_TEXT=1: give yes/no questions real option text from data/vega_yes_no_text.json.
+      Without it vegaml shows "no - the statement does not hold / yes - the statement holds".
+    - VEGA_SCORE_AS_CHOICE=1: ask score questions as a choice between the rubric levels and map
+      the answer back to the level index, instead of vegaml's ordered score rail.
+    - VEGA_PLAIN_STATE=1: send a one-field input as plain text, and several fields as
+      "Key: value" lines, instead of the JSON string vegaml makes from a dict.
+    - VEGA_VIEWS=1|2|3: vegaml's test-time averaging (2 adds a reading with the options
+      reversed, 3 also a prose rendering); about that many times the latency.
+
+    The readout is always vegaml's zero-shot engine (`mode="engine"`), so a fitted adapter can
+    never change this lane's answers.
+    """
+
     name = "vega"
 
-    def __init__(self):
+    def __init__(self, yes_no_text=None, score_as_choice=None, plain_state=None, views=None):
         global _vega
         with _vega_lock:
             if _vega is None:
@@ -139,24 +179,57 @@ class VegaModel(DecisionModel):
                 # "0.8b" (vegaml's own default) or "4b"; the size goes in as load()'s first argument.
                 size = os.environ.get("VEGA_SIZE", "0.8b").strip()
                 _vega = vegaml.load(size, device=device)
+                _vega_info.update(size=size.lower(), device=device)
                 print(f"[vega] loaded the {size} checkpoint on {device}")
         self.vega = _vega
+        self.yes_no_text = _env_flag("VEGA_YES_NO_TEXT") if yes_no_text is None else yes_no_text
+        self.score_as_choice = _env_flag("VEGA_SCORE_AS_CHOICE") if score_as_choice is None else score_as_choice
+        self.plain_state = _env_flag("VEGA_PLAIN_STATE") if plain_state is None else plain_state
+        self.views = int(os.environ.get("VEGA_VIEWS", "1")) if views is None else int(views)
+        if self.views not in (1, 2, 3):
+            raise ValueError(f"VEGA_VIEWS must be 1, 2 or 3, got {self.views}")
+        self.yes_no = json.loads(VEGA_YES_NO_TEXT.read_text(encoding="utf-8")) if self.yes_no_text else {}
+        self.config = {
+            "vegaml": _pkg_version("vegaml"), "size": _vega_info.get("size"), "device": _vega_info.get("device"),
+            "mode": "engine", "views": self.views, "yes_no_text": self.yes_no_text,
+            "score_as_choice": self.score_as_choice, "plain_state": self.plain_state,
+        }
 
-    @staticmethod
-    def _to_vega(questions):
-        # Vega calls the yes/no type "boolean"; everything else has the same shape.
-        return {qid: {**q, "type": "boolean"} if q["type"] == "noul" else q for qid, q in questions.items()}
+    def _to_vega(self, questions):
+        out = {}
+        for qid, q in questions.items():
+            if q["type"] == "noul":
+                # Vega calls the yes/no type "boolean".
+                vq = {**q, "type": "boolean"}
+                if qid in self.yes_no:
+                    vq["criteria"] = {"false": self.yes_no[qid]["false"], "true": self.yes_no[qid]["true"]}
+            elif q["type"] == "score" and self.score_as_choice:
+                vq = {**q, "type": "choice", "criteria": {str(i): text for i, text in enumerate(q["criteria"])}}
+            else:
+                vq = q
+            out[qid] = vq
+        return out
+
+    def _state(self, state):
+        if not self.plain_state:
+            return state
+        if len(state) == 1:
+            return str(next(iter(state.values())))
+        return "\n".join(f"{str(k).replace('_', ' ').capitalize()}: {v}" for k, v in state.items())
 
     def answer(self, state, questions):
-        result = self.vega.decide(state, self._to_vega(questions))
+        result = self.vega.decide(self._state(state), self._to_vega(questions), mode="engine", views=self.views)
         self.last_usage = _normalize_usage(result.get("n_tokens"), 0)
         out = {}
         for qid, ans in result["answers"].items():
-            if "choice" in ans:
+            q = questions[qid]
+            if q["type"] == "score":
+                legend = dict(enumerate(q.get("criteria") or []))
+                probs = {int(k): v for k, v in ans["probs"].items()}
+                expected = ans["expected_score"] if "expected_score" in ans else sum(k * v for k, v in probs.items())
+                out[qid] = _normalize_score(expected, legend, probs, ans["confidence"])
+            elif q["type"] == "choice":
                 out[qid] = _normalize_choice(ans["choice"], ans["probs"], ans["confidence"])
-            elif "score" in ans:
-                legend = dict(enumerate(questions[qid].get("criteria") or []))
-                out[qid] = _normalize_score(ans["expected_score"], legend, ans["probs"], ans["confidence"])
             else:
                 out[qid] = _normalize_noul(ans["boolean"])
         return out
@@ -174,6 +247,7 @@ class OpenAIDecisionsModel(DecisionModel):
         from openai import OpenAI
         self.client = OpenAI(api_key=api_key)
         self.model = os.environ.get("OPENAI_DECISIONS_MODEL", "gpt-6-luna")
+        self.config = {"openai": _pkg_version("openai"), "model": self.model}
 
     @staticmethod
     def _to_openai(questions):

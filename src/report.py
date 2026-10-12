@@ -130,8 +130,19 @@ def summarize(runs):
             "hard": p["hard"][0] / p["hard"][1] if p["hard"][1] else None,
             "datasets": p["datasets"], "refusals": p["refusals"], "errors": p["errors"],
         }
+    # Vega's checkpoint size comes from each run's recorded config; runs saved before configs
+    # were recorded have none, so they show as "size not recorded".
+    kinds = {}
+    for m in models:
+        kinds[m] = KIND.get(m, "")
+        if m == "vega":
+            sizes = {(r[1].get("model_config") or {}).get("vega", {}).get("size") for r in runs.values()
+                     if "vega" in r[1]["models"]}
+            label = ("mixed sizes" if len(sizes) > 1 else
+                     "size not recorded" if sizes == {None} else next(iter(sizes)).upper())
+            kinds[m] = f"{kinds[m]} · {label}"
     return {"datasets": datasets, "models": models, "per_ds": per_ds, "questions": questions,
-            "summary": summary, "runs": runs}
+            "summary": summary, "runs": runs, "kinds": kinds}
 
 
 def findings(s):
@@ -305,7 +316,7 @@ def render(s):
         c.box(x, y_cards, cw, cards_h, PANEL, radius=12, edge=BORDER)
         c.box(x + 20, y_cards + 22, 12, 12, COLOR.get(m, MUTED), radius=3)
         c.text(x + 40, y_cards + 33, NAMES.get(m, m), size=16, weight="bold")
-        c.text(x + 40 + 9.5 * len(NAMES.get(m, m)) + 12, y_cards + 33, KIND.get(m, ""), size=12, color=MUTED)
+        c.text(x + 40 + 9.5 * len(NAMES.get(m, m)) + 12, y_cards + 33, s["kinds"][m], size=12, color=MUTED)
         c.box(x + cw - 50, y_cards + 18, 30, 20, RULE, radius=10)
         c.text(x + cw - 35, y_cards + 33, f"#{rank}", size=12, weight="bold", color=TEXT2, ha="center")
         c.text(x + 20, y_cards + 84, _pct(st["acc"]), size=40, weight="bold")

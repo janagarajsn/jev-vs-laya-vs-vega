@@ -31,7 +31,8 @@
     };
   });
 
-  const firstDataset = datasetSelect.querySelector(".opt");
+  // Each dataset button's value is "<split>/<name>", e.g. "golden/spam_detection" or "dev/spam_detection".
+  const firstDataset = datasetSelect.querySelector(".opt.active") || datasetSelect.querySelector(".opt");
   let selectedDataset = firstDataset ? firstDataset.dataset.value : null;
   let selectedCount = null; // null = every item
   let running = false;
@@ -169,7 +170,9 @@
       resp = await fetch("/api/benchmark/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ dataset: selectedDataset, limit: selectedCount }),
+        body: JSON.stringify({
+          split: selectedDataset.split("/")[0], dataset: selectedDataset.split("/")[1], limit: selectedCount,
+        }),
       });
     } catch (err) {
       showError("Could not reach the server.");
@@ -366,8 +369,9 @@
     const lanes = LANES.filter((lane) => m.overall[lane]);
     resultsBody.innerHTML = "";
     resultsFile.textContent = `saved to ${event.results_file}`;
-    const runName = event.results_file.split("/").pop().replace(/\.jsonl$/, "");
-    exportXlsx.href = `/api/results/${encodeURIComponent(runName)}.xlsx`;
+    // results_file is "results/<run>.jsonl" or "results/dev/<run>.jsonl".
+    const parts = event.results_file.replace(/\.jsonl$/, "").split("/").slice(1);
+    exportXlsx.href = `/api/results/${parts.map(encodeURIComponent).join("/")}.xlsx`;
 
     const overallRows = ["accuracy", "avg_confidence", "ece", "refusals", "errors"].map((key) => ({
       key, label: METRIC_LABEL[key], values: Object.fromEntries(lanes.map((l) => [l, m.overall[l][key]])),
@@ -428,7 +432,7 @@
         scoreLevels = event.score_levels || {};
         questionIds.forEach((qid) => LANES.forEach((lane) => (qTotals[lane][qid] = { hits: 0, n: 0 })));
         buildQuestionTable();
-        benchStatus.textContent = `Running ${event.title}: ${event.items} items...`;
+        benchStatus.textContent = `Running ${event.split === "dev" ? "dev set: " : ""}${event.title}: ${event.items} items...`;
         break;
 
       case "item_start":

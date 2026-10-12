@@ -9,6 +9,8 @@ the typed-decision API.
 Running totals are streamed while the run is in progress; the full metric set
 (metrics.compute) is computed once at the end from the per-item records, which are
 also written to results/ so a run can be rescored later without calling the models.
+Golden runs go to results/, dev runs (harness tuning) to results/dev/. Each file's header
+records every model's `config` (package versions, checkpoint, harness options).
 """
 import json
 import time
@@ -23,6 +25,14 @@ LANES = ("jev", "laya", "vega", "openai")
 RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
 
 
+def _display_path(path):
+    """Repo-relative path for the dashboard (e.g. results/dev/<run>.jsonl), absolute if outside the repo."""
+    try:
+        return str(path.resolve().relative_to(RESULTS_DIR.parent))
+    except ValueError:
+        return str(path.resolve())
+
+
 def _answer_safely(model, state, questions):
     """One model call; a failed call becomes an "error" answer instead of ending the run."""
     t0 = time.perf_counter()
@@ -35,20 +45,25 @@ def _answer_safely(model, state, questions):
     return answers, latency, dict(usage), error
 
 
-def run_benchmark_stream(dataset_name, emit, limit=None, seed=0):
-    dataset = load_dataset(dataset_name)
+def run_benchmark_stream(dataset_name, emit, limit=None, seed=0, split="golden", models=None, out_dir=None):
+    """`models` optionally maps lane name -> an already built DecisionModel (the ablation script
+    passes Vega variants this way); otherwise every lane in LANES is loaded. `out_dir` overrides
+    where the run file is written (default results/, or results/<split>/ for a non-golden split)."""
+    dataset = load_dataset(dataset_name, split)
     meta = dataset["meta"]
     questions = meta["questions"]
     context = meta.get("context") or {}
     items = sample_items(dataset, limit, seed)
 
-    models = {}
-    for name in LANES:
-        emit({"type": "status", "message": f"Loading {name}..."})
-        try:
-            models[name] = get_model(name)
-        except Exception as exc:
-            emit({"type": "model_unavailable", "model": name, "message": str(exc)})
+    if models is None:
+        models = {}
+        for name in LANES:
+            emit({"type": "status", "message": f"Loading {name}..."})
+            try:
+                models[name] = get_model(name)
+            except Exception as exc:
+                emit({"type": "model_unavailable", "model": name, "message": str(exc)})
+    model_config = {name: dict(model.config) for name, model in models.items()}
 
     if not models:
         emit({"type": "error", "message": "No usable decision models available."})
@@ -60,18 +75,21 @@ def run_benchmark_stream(dataset_name, emit, limit=None, seed=0):
     token_totals = {name: {"input_tokens": 0, "output_tokens": 0} for name in models}
     records = []
 
-    RESULTS_DIR.mkdir(exist_ok=True)
-    results_path = RESULTS_DIR / f"{datetime.now():%Y%m%d-%H%M%S}-{meta['name']}.jsonl"
+    out_dir = Path(out_dir) if out_dir else RESULTS_DIR if split == "golden" else RESULTS_DIR / split
+    out_dir.mkdir(parents=True, exist_ok=True)
+    results_path = out_dir / f"{datetime.now():%Y%m%d-%H%M%S}-{meta['name']}.jsonl"
     results_file = results_path.open("w", encoding="utf-8")
     results_file.write(json.dumps({"run": {
-        "dataset": meta["name"], "title": meta["title"], "started_at": datetime.now().isoformat(timespec="seconds"),
-        "models": list(models), "limit": limit, "seed": seed, "questions": questions,
+        "dataset": meta["name"], "split": split, "title": meta["title"],
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+        "models": list(models), "model_config": model_config,
+        "limit": limit, "seed": seed, "questions": questions,
     }}, ensure_ascii=False) + "\n")
 
     start = time.monotonic()
     emit({
-        "type": "benchmark_started", "dataset": meta["name"], "title": meta["title"],
-        "items": len(items), "models": list(models),
+        "type": "benchmark_started", "dataset": meta["name"], "split": split, "title": meta["title"],
+        "items": len(items), "models": list(models), "model_config": model_config,
         "questions": {qid: q["type"] for qid, q in questions.items()},
         "score_levels": {qid: q["criteria"] for qid, q in questions.items() if q["type"] == "score"},
     })
@@ -142,6 +160,6 @@ def run_benchmark_stream(dataset_name, emit, limit=None, seed=0):
     emit({
         "type": "done",
         "elapsed": round(time.monotonic() - start, 2),
-        "results_file": str(results_path.relative_to(RESULTS_DIR.parent)),
+        "results_file": _display_path(results_path),
         "metrics": compute(questions, records, list(models)),
     })

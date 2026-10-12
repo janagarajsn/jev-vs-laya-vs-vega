@@ -20,7 +20,11 @@ import json
 import random
 from pathlib import Path
 
-GOLDEN_DIR = Path(__file__).resolve().parent.parent / "data" / "golden"
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+GOLDEN_DIR = DATA_DIR / "golden"
+# "golden" is the test set the published results use; "dev" holds separate items for tuning the
+# harness, so changes are never tuned on the test set. Both use the same file format.
+SPLITS = {"golden": GOLDEN_DIR, "dev": DATA_DIR / "dev"}
 QTYPES = ("choice", "noul", "score")
 ITEM_KEYS = {"id", "input", "labels", "tags", "rationale", "reviewed"}
 
@@ -84,10 +88,12 @@ def _validate(meta, items, path):
         raise DatasetError(f"{path}: no items")
 
 
-def load_dataset(name):
-    path = GOLDEN_DIR / f"{name}.jsonl"
+def load_dataset(name, split="golden"):
+    if split not in SPLITS:
+        raise DatasetError(f"Unknown split {split!r}")
+    path = SPLITS[split] / f"{name}.jsonl"
     if not path.is_file():
-        raise DatasetError(f"Unknown dataset {name!r}")
+        raise DatasetError(f"Unknown {split} dataset {name!r}")
     lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
     try:
         rows = [json.loads(line) for line in lines]
@@ -100,12 +106,12 @@ def load_dataset(name):
     return {"meta": meta, "items": items}
 
 
-def list_datasets():
-    """Summaries of every valid dataset, for the dashboard's picker."""
+def list_datasets(split="golden"):
+    """Summaries of every valid dataset in a split, for the dashboard's picker."""
     out = []
-    for path in sorted(GOLDEN_DIR.glob("*.jsonl")):
+    for path in sorted(SPLITS[split].glob("*.jsonl")):
         try:
-            ds = load_dataset(path.stem)
+            ds = load_dataset(path.stem, split)
         except DatasetError as exc:
             print(f"[golden] skipping {path.name}: {exc}")
             continue
@@ -127,6 +133,7 @@ def sample_items(dataset, limit=None, seed=0):
 
 
 if __name__ == "__main__":
-    for summary in list_datasets():
-        print(f"{summary['name']}: {summary['items']} items ({summary['reviewed']} reviewed), "
-              f"questions {summary['questions']}")
+    for split in SPLITS:
+        for summary in list_datasets(split):
+            print(f"{split}/{summary['name']}: {summary['items']} items ({summary['reviewed']} reviewed), "
+                  f"questions {summary['questions']}")

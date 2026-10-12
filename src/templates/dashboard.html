@@ -14,14 +14,18 @@
 
   <section class="control-bar">
     <div class="control-block">
-      <h2>Dataset</h2>
-      <div class="btn-row" id="dataset-select">
-        {% for ds in datasets %}
-        <button class="opt dataset-opt{% if loop.first %} active{% endif %}" data-value="{{ ds.name }}"
-                data-description="{{ ds.description }}" title="{{ ds.description }}">
-          <span>{{ ds.title }}</span>
-          <span class="opt-sub">{{ ds['items'] }} items · {{ ds.questions|join(', ') }}{% if ds.reviewed < ds['items'] %} · {{ ds.reviewed }}/{{ ds['items'] }} reviewed{% endif %}</span>
-        </button>
+      <div id="dataset-select">
+        {% for split, title, group in [("golden", "Dataset", datasets), ("dev", "Dev sets (for tuning the harness, saved to results/dev/)", dev_datasets)] if group %}
+        <h2{% if not loop.first %} class="split-title"{% endif %}>{{ title }}</h2>
+        <div class="btn-row">
+          {% for ds in group %}
+          <button class="opt dataset-opt{% if split == "golden" and loop.first %} active{% endif %}"
+                  data-value="{{ split }}/{{ ds.name }}" data-description="{{ ds.description }}" title="{{ ds.description }}">
+            <span>{{ ds.title }}</span>
+            <span class="opt-sub">{{ ds['items'] }} items · {{ ds.questions|join(', ') }}{% if ds.reviewed < ds['items'] %} · {{ ds.reviewed }}/{{ ds['items'] }} reviewed{% endif %}</span>
+          </button>
+          {% endfor %}
+        </div>
         {% endfor %}
       </div>
     </div>

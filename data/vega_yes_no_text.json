@@ -1,0 +1,23 @@
+{
+  "_about": "Option text for yes/no questions, read only by the Vega wrapper when VEGA_YES_NO_TEXT=1. Without it vegaml shows the generic options 'no - the statement does not hold' / 'yes - the statement holds'. Keyed by question id; each entry follows the answer key's definition of that question.",
+  "is_urgent": {
+    "true": "there is a hard deadline or same-day need: it must be fixed today or by tomorrow, or it is blocking work right now",
+    "false": "no deadline: at most a polite wish for a reply soon or in the next day or two"
+  },
+  "refund_requested": {
+    "true": "the customer explicitly asks for money back or for a charge to be refunded",
+    "false": "the customer does not ask for any money back"
+  },
+  "churn_risk": {
+    "true": "the customer threatens or is considering leaving, cancelling or switching to a competitor if things do not improve",
+    "false": "no threat to leave; a plain, already-decided cancellation request with no threat also counts as no"
+  },
+  "is_spam": {
+    "true": "unwanted mail the recipient never asked for: bulk advertising, a scam or a phishing attempt",
+    "false": "mail the recipient expects or would want: personal, work, transactional, a genuine security notice or a newsletter they subscribed to"
+  },
+  "is_phishing": {
+    "true": "impersonates a trusted party (bank, service, colleague, IT, courier, tax office) to get passwords, payment details, personal data or codes, or to open a malicious link or attachment",
+    "false": "does not impersonate a trusted party to steal data; ordinary spam, a scam from an unknown sender, and legitimate mail are all no"
+  }
+}

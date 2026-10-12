@@ -41,6 +41,10 @@ After editing, validate from the project root:
 python src/golden.py
 ```
 
+## Dev sets
+
+[data/dev/](../dev/) holds about 20 items per dataset in the same format, with the same header (questions and tags) and new content. They are for tuning a model's harness (see `python src/vega_ablation.py`), so changes are measured there before the golden sets are run. The dev items start as `"reviewed": false`; review them the same way. Runs on a dev set are saved to `results/dev/` and are left out of the performance dashboard.
+
 ## Adding a dataset
 
 Drop a new `<name>.jsonl` here with a header whose `name` matches the file name. It shows up in the dashboard's picker automatically; no code changes are needed.

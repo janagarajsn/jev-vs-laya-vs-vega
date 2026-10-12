@@ -285,6 +285,7 @@ header .dim { color: var(--dim); font-weight: 400; }
 
 .dataset-opt { flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; }
 .opt-sub { font-size: 11px; color: var(--dim); }
+.split-title { margin-top: 14px !important; }
 
 .results-wrap.hidden { display: none; }
 .results-file { font-size: 11.5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }

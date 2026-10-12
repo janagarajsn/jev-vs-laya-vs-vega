@@ -9,7 +9,7 @@ from flask import Flask, Response, jsonify, render_template, request
 from decision_models import get_model
 from benchmark_engine import LANES, RESULTS_DIR, run_benchmark_stream
 from export import build_workbook
-from golden import list_datasets
+from golden import SPLITS, list_datasets
 from metrics import load_run
 
 dotenv.load_dotenv()
@@ -29,22 +29,26 @@ MODEL_INFO = {
 
 @app.route("/")
 def index():
-    return render_template("dashboard.html", lanes=LANES, model_info=MODEL_INFO, datasets=list_datasets())
+    return render_template("dashboard.html", lanes=LANES, model_info=MODEL_INFO,
+                           datasets=list_datasets("golden"), dev_datasets=list_datasets("dev"))
 
 
 @app.route("/api/datasets")
 def api_datasets():
-    return jsonify(datasets=list_datasets())
+    split = request.args.get("split", "golden")
+    if split not in SPLITS:
+        return jsonify(error=f"Unknown split: {split!r}."), 400
+    return jsonify(split=split, datasets=list_datasets(split))
 
 
-def _run_benchmark(dataset, limit):
+def _run_benchmark(dataset, limit, split):
     q = _run_state["queue"]
 
     def emit(event):
         q.put(event)
 
     try:
-        run_benchmark_stream(dataset, emit, limit=limit)
+        run_benchmark_stream(dataset, emit, limit=limit, split=split)
     except Exception as exc:
         emit({"type": "error", "message": str(exc)})
     finally:
@@ -57,9 +61,12 @@ def api_benchmark_start():
     data = request.get_json(force=True) or {}
     dataset = data.get("dataset")
     limit = data.get("limit")
+    split = data.get("split", "golden")
 
-    if dataset not in {d["name"] for d in list_datasets()}:
-        return jsonify(error=f"Unknown dataset: {dataset!r}."), 400
+    if split not in SPLITS:
+        return jsonify(error=f"Unknown split: {split!r}."), 400
+    if dataset not in {d["name"] for d in list_datasets(split)}:
+        return jsonify(error=f"Unknown {split} dataset: {dataset!r}."), 400
     if limit is not None and (not isinstance(limit, int) or limit < 1):
         return jsonify(error="limit must be a positive integer, or null for every item."), 400
 
@@ -68,7 +75,7 @@ def api_benchmark_start():
             return jsonify(error="A benchmark run is already in progress. Wait for it to finish."), 409
         _run_state["running"] = True
         _run_state["queue"] = queue.Queue()
-        thread = threading.Thread(target=_run_benchmark, args=(dataset, limit), daemon=True)
+        thread = threading.Thread(target=_run_benchmark, args=(dataset, limit, split), daemon=True)
         thread.start()
 
     return jsonify(ok=True)
@@ -91,9 +98,10 @@ def api_benchmark_stream():
 
 
 @app.route("/api/results/<name>.xlsx")
-def api_results_xlsx(name):
-    # <name> can't contain "/", so this only ever reads a file directly inside results/.
-    path = RESULTS_DIR / f"{name}.jsonl"
+@app.route("/api/results/dev/<name>.xlsx", defaults={"folder": "dev"})
+def api_results_xlsx(name, folder=None):
+    # <name> can't contain "/", so this only reads a file directly inside results/ or results/dev/.
+    path = (RESULTS_DIR / folder if folder else RESULTS_DIR) / f"{name}.jsonl"
     if not path.is_file():
         return jsonify(error=f"No saved run named {name!r}."), 404
     run, records = load_run(path)

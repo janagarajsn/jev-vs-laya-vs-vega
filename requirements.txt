@@ -1,8 +1,8 @@
 Flask==3.1.3
 torch==2.14.1
-laya==0.3.5
+laya==0.4.6
 jev==0.3.0
-vegaml==0.6.1
+vegaml==0.8.0
 openai==3.28.0
 openpyxl==3.1.5
 matplotlib==3.11.2
