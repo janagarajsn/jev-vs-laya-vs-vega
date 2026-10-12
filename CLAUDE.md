@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Flask app that benchmarks four typed-decision ("System-1") models — **Jev** (typesafe.ai cloud API, package `jev`, imported as `typesafe_sdk`), **Laya** (local HF weights `convaiinnovations/laya-typed-decisions`), **Vega** (`vegaml`, local 0.8B checkpoint) and **OpenAI** (Decisions API `POST /v1/decisions` via `openai` SDK `client.decisions.create`, default model `gpt-6-luna`) — on golden datasets (JSONL files in `data/golden/` with known-correct labels), streaming results to a browser dashboard over SSE.
+A Flask app that benchmarks four typed-decision ("System-1") models — **Jev** (typesafe.ai cloud API, package `jev`, imported as `typesafe_sdk`), **Laya** (local HF weights `convaiinnovations/laya-typed-decisions`), **Vega** (`vegaml`, local 0.8B or 4B checkpoint via `VEGA_SIZE`) and **OpenAI** (Decisions API `POST /v1/decisions` via `openai` SDK `client.decisions.create`, default model `gpt-6-luna`) — on golden datasets (JSONL files in `data/golden/` with known-correct labels), streaming results to a browser dashboard over SSE.
 
 ## Commands
 
@@ -15,13 +15,13 @@ cd src && python app.py           # http://localhost:5050
 ```
 
 - Modules use flat imports (`from decision_models import ...`), so run from inside `src/`.
-- `.env` in the project root supplies `HF_TOKEN`, `TYPESAFE_API_KEY` (Jev only) and `OPENAI_API_KEY` (OpenAI only; optional `OPENAI_DECISIONS_MODEL`). A model whose key is missing is skipped and the run continues with the others.
+- `.env` in the project root (template: `.env.example`) supplies `HF_TOKEN`, `TYPESAFE_API_KEY` (Jev only), `OPENAI_API_KEY` (OpenAI only; optional `OPENAI_DECISIONS_MODEL`) and `VEGA_SIZE` (`0.8b` default or `4b`, passed as `vegaml.load()`'s first argument; read once when Vega loads, so changing it needs a restart). A model whose key is missing is skipped and the run continues with the others.
 - Headless run without the UI:
   ```bash
   curl -X POST localhost:5050/api/benchmark/start -H 'Content-Type: application/json' -d '{"dataset": "spam_detection", "limit": 20}'
   curl -N localhost:5050/api/benchmark/stream
   ```
-- `python golden.py` (from `src/`) validates every dataset; `python metrics.py ../results/<run>.jsonl` rescores a saved run offline. `python export.py ../results/<run>.jsonl` writes an `.xlsx` next to it (same as `GET /api/results/<run>.xlsx`).
+- `python golden.py` (from `src/`) validates every dataset; `python metrics.py ../results/<run>.jsonl` rescores a saved run offline. `python export.py ../results/<run>.jsonl` writes an `.xlsx` next to it (same as `GET /api/results/<run>.xlsx`). `python report.py [runs...]` writes `results/performance_dashboard.jpg` (same as `GET /api/report.jpg`).
 
 There is no test suite, linter config, or build step.
 
@@ -35,6 +35,7 @@ Request flow: `app.py` → background thread → `benchmark_engine.run_benchmark
 - **`benchmark_engine.py`**: each item gets one `answer()` call per model, run **sequentially** (latency is wall-clock per call). A call that raises becomes `{"type": "error"}` answers plus a `model_error` event; the run continues. Streams live running totals and disagreements, writes each item's record to `results/<timestamp>-<dataset>.jsonl` as it goes, and puts `metrics.compute(...)` in the `done` event.
 - **`metrics.py`**: all final metrics, pure functions of `(questions, records, models)`. Scoring is in `pick_and_confidence`: noul is `≥ 0.5`; score uses the **argmax rubric level**, not the rounded expected value; "confidence" is the probability assigned to the predicted value, deliberately **not** the vendor's own `confidence` field. A refusal or error predicts `None`: a miss for accuracy, excluded from calibration/Brier/AUC/MAE. Per type: choice → macro F1, per-class P/R/F1, confusion; noul → P/R/F1, Brier, AUC; score → MAE (expected score), within-one, QWK. Plus ECE, latency p50/p95, tokens, and accuracy by tag.
 - **`export.py`**: builds the Excel workbook from a saved run with openpyxl, recomputing metrics via `metrics.compute` and pulling item text from the dataset by `id`. "Save as PDF" is just `window.print()` plus the `@media print` block in `style.css`.
+- **`report.py`**: the cross-run dashboard JPG, drawn with matplotlib (Agg) on a 1600-unit canvas with y pointing down, so layout numbers read like CSS pixels; saved at 2x. Picks the latest full run (`limit` null) per dataset, else the latest run. Handles models missing from some runs and datasets without `easy`/`hard` tags. Key findings are generated from the numbers, so no dataset names are hard-coded.
 - **Frontend**: `templates/dashboard.html` + `static/dashboard.js` (vanilla JS consuming the SSE event types listed in README) + `static/style.css` (per-model colours). The question table and results panel are built in JS from the `benchmark_started` and `done` events, so any dataset's questions work without template changes.
 
 Token counts are not comparable across models: Laya counts encoder tokens once per question, Vega counts prompt tokens, and Jev and OpenAI report billable input/output.

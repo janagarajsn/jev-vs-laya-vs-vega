@@ -2,8 +2,9 @@
 
 - Laya (convaiinnovations/laya-typed-decisions): local weights, loaded once and reused.
 - Jev (typesafe.ai): a cloud API, needs TYPESAFE_API_KEY in the environment.
-- Vega (vegaml, https://github.com/NandhaKishorM/vegaml): local weights (the default 0.8B
-  checkpoint), zero-shot "engine" readout, loaded once and reused.
+- Vega (vegaml, https://github.com/NandhaKishorM/vegaml): local weights, zero-shot "engine"
+  readout, loaded once and reused. VEGA_SIZE in the environment picks the checkpoint: "0.8b"
+  (the default) or "4b".
 - OpenAI Decisions API (POST /v1/decisions, public beta): a cloud API, needs OPENAI_API_KEY
   in the environment. The model defaults to gpt-6-luna; override with OPENAI_DECISIONS_MODEL.
 
@@ -135,7 +136,10 @@ class VegaModel(DecisionModel):
                 import vegaml
                 # vegaml only picks between cuda and cpu on its own, so ask for Apple's GPU explicitly.
                 device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
-                _vega = vegaml.load(device=device)
+                # "0.8b" (vegaml's own default) or "4b"; the size goes in as load()'s first argument.
+                size = os.environ.get("VEGA_SIZE", "0.8b").strip()
+                _vega = vegaml.load(size, device=device)
+                print(f"[vega] loaded the {size} checkpoint on {device}")
         self.vega = _vega
 
     @staticmethod
