@@ -3,35 +3,47 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Jev vs Laya vs Vega — Ticket Triage Benchmark</title>
+<title>Jev vs Laya vs Vega vs OpenAI — Typed-Decision Benchmark</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
 </head>
 <body>
 <div class="app">
   <header>
-    <h1>Jev vs Laya vs Vega <span class="dim">/ support ticket triage</span></h1>
+    <h1>Jev vs Laya vs Vega vs OpenAI <span class="dim">/ golden-dataset benchmark</span></h1>
   </header>
 
   <section class="control-bar">
     <div class="control-block">
-      <h2>Tickets</h2>
+      <h2>Dataset</h2>
+      <div class="btn-row" id="dataset-select">
+        {% for ds in datasets %}
+        <button class="opt dataset-opt{% if loop.first %} active{% endif %}" data-value="{{ ds.name }}"
+                data-description="{{ ds.description }}" title="{{ ds.description }}">
+          <span>{{ ds.title }}</span>
+          <span class="opt-sub">{{ ds['items'] }} items · {{ ds.questions|join(', ') }}{% if ds.reviewed < ds['items'] %} · {{ ds.reviewed }}/{{ ds['items'] }} reviewed{% endif %}</span>
+        </button>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="control-block">
+      <h2>Items</h2>
       <div class="btn-row" id="count-select">
         <button class="opt" data-value="20">20</button>
-        <button class="opt active" data-value="50">50</button>
-        <button class="opt" data-value="100">100</button>
-        <button class="opt" data-value="200">200</button>
+        <button class="opt" data-value="50">50</button>
+        <button class="opt active" data-value="all">All</button>
       </div>
     </div>
 
     <div class="control-block actions">
-      <button id="run-btn" class="start-btn">Run triage benchmark</button>
+      <button id="run-btn" class="start-btn"{% if not datasets %} disabled{% endif %}>Run benchmark</button>
     </div>
   </section>
 
-  <div id="error-banner" class="error-banner hidden"></div>
+  <div id="error-banner" class="error-banner{% if datasets %} hidden{% endif %}">{% if not datasets %}No valid datasets found in data/golden/. Run <code>python golden.py</code> from src/ to see why.{% endif %}</div>
 
   <section class="bench-progress">
-    <div id="bench-status" class="bench-status">Idle — synthetic tickets are generated with known-correct labels, so accuracy is exact.</div>
+    <div id="bench-status" class="bench-status">Idle. Every item has a known-correct answer, so accuracy is exact.</div>
     <div class="progress-bar"><div id="bench-progress-fill" class="progress-fill"></div></div>
   </section>
 
@@ -53,33 +65,36 @@
 
   <section class="qtable-wrap">
     <h2>Per-question breakdown</h2>
-    <table class="qtable" id="qtable">
-      <thead>
-        <tr>
-          <th>question</th>
-          <th>type</th>
-          {% for lane in lanes %}<th>{{ model_info[lane][0] }} accuracy</th>{% endfor %}
-          <th>disagreements</th>
-          <th>right when they disagreed</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for qid, qtype in questions.items() %}
-        <tr data-question="{{ qid }}">
-          <td>{{ qid }}</td>
-          <td class="qtype">{{ qtype }}</td>
-          {% for lane in lanes %}<td id="q-{{ qid }}-{{ lane }}-acc" class="acc lane-{{ lane }}">—</td>{% endfor %}
-          <td id="q-{{ qid }}-disagree">0</td>
-          <td id="q-{{ qid }}-h2h" class="h2h-cell">—</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+    <div class="table-scroll">
+      <table class="qtable" id="qtable">
+        <thead>
+          <tr>
+            <th>question</th>
+            <th>type</th>
+            {% for lane in lanes %}<th>{{ model_info[lane][0] }} accuracy</th>{% endfor %}
+            <th>disagreements</th>
+            <th>right when they disagreed</th>
+          </tr>
+        </thead>
+        <tbody id="qtable-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="qtable-wrap results-wrap hidden" id="results">
+    <div class="feed-header">
+      <h2>Results <span class="dim results-file" id="results-file"></span></h2>
+      <div class="btn-row export-actions">
+        <a class="opt" id="export-xlsx" href="#" download>Download Excel</a>
+        <button class="opt" id="export-pdf" type="button">Save as PDF</button>
+      </div>
+    </div>
+    <div id="results-body"></div>
   </section>
 
   <section class="bench-feed-wrap ticket-feed-wrap">
     <div class="feed-header">
-      <h2>Live tickets <span class="dim" id="ticket-label"></span></h2>
+      <h2>Live items <span class="dim" id="ticket-label"></span></h2>
       <div class="btn-row" id="type-filter">
         <button class="opt active" data-value="all">All</button>
         <button class="opt" data-value="choice">choice</button>
@@ -91,6 +106,6 @@
   </section>
 </div>
 
-<script src="{{ url_for('static', filename='triage.js') }}"></script>
+<script src="{{ url_for('static', filename='dashboard.js') }}"></script>
 </body>
 </html>

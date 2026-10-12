@@ -23,7 +23,7 @@ OpenAI report their own billable tokens.
 "confidence" is each vendor's own reported field (Jev's noul answers don't ship one, so it's
 computed the same way Laya computes its own: max(noul, 1 - noul)). Callers that want
 "probability the model assigned to what it actually predicted" for calibration purposes
-should derive it from probabilities/noul/score themselves -- see triage_engine.py for why
+should derive it from probabilities/noul/score themselves -- see metrics.py for why
 the raw vendor confidence field isn't a reliable stand-in for that.
 """
 import json

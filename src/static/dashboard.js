@@ -1,9 +1,8 @@
 (function () {
   const LANES = ["jev", "laya", "vega", "openai"];
   const NAME = { jev: "Jev", laya: "Laya", vega: "Vega", openai: "OpenAI" };
-  const FRUSTRATION_LABELS = ["calm", "concerned", "annoyed", "angry"];
-  const IMPACT_LABELS = ["personal", "team", "company"];
 
+  const datasetSelect = document.getElementById("dataset-select");
   const countSelect = document.getElementById("count-select");
   const typeFilterSelect = document.getElementById("type-filter");
   const runBtn = document.getElementById("run-btn");
@@ -13,6 +12,12 @@
   const benchProgressFill = document.getElementById("bench-progress-fill");
   const ticketLabel = document.getElementById("ticket-label");
   const ticketFeed = document.getElementById("ticket-feed");
+  const qtableBody = document.getElementById("qtable-body");
+  const resultsSection = document.getElementById("results");
+  const resultsBody = document.getElementById("results-body");
+  const resultsFile = document.getElementById("results-file");
+  const exportXlsx = document.getElementById("export-xlsx");
+  document.getElementById("export-pdf").addEventListener("click", () => window.print());
 
   const scoreEls = {};
   LANES.forEach((lane) => {
@@ -26,14 +31,17 @@
     };
   });
 
-  let selectedCount = 50;
+  const firstDataset = datasetSelect.querySelector(".opt");
+  let selectedDataset = firstDataset ? firstDataset.dataset.value : null;
+  let selectedCount = null; // null = every item
   let running = false;
   let eventSource = null;
-  let totalTickets = 0;
+  let totalItems = 0;
   let feedCount = 0;
 
   let questionIds = [];
   let questionTypes = {};
+  let scoreLevels = {};
   let typeFilter = "all";
   const qTotals = {};
   LANES.forEach((lane) => (qTotals[lane] = {}));
@@ -42,7 +50,7 @@
     confSum[lane] = 0; confN[lane] = 0; latencySum[lane] = 0; latencyN[lane] = 0;
   });
 
-  let currentTicket = null;
+  let currentItem = null;
 
   function setActive(group, value) {
     group.querySelectorAll(".opt").forEach((btn) => {
@@ -50,11 +58,19 @@
     });
   }
 
+  datasetSelect.addEventListener("click", (e) => {
+    const btn = e.target.closest(".opt");
+    if (!btn || running) return;
+    selectedDataset = btn.dataset.value;
+    setActive(datasetSelect, selectedDataset);
+    benchStatus.textContent = btn.dataset.description;
+  });
+
   countSelect.addEventListener("click", (e) => {
     const btn = e.target.closest(".opt");
     if (!btn || running) return;
-    selectedCount = parseInt(btn.dataset.value, 10);
-    setActive(countSelect, selectedCount);
+    selectedCount = btn.dataset.value === "all" ? null : parseInt(btn.dataset.value, 10);
+    setActive(countSelect, btn.dataset.value);
   });
 
   typeFilterSelect.addEventListener("click", (e) => {
@@ -83,9 +99,10 @@
 
   function setRunning(isRunning) {
     running = isRunning;
+    datasetSelect.querySelectorAll(".opt").forEach((b) => (b.disabled = isRunning));
     countSelect.querySelectorAll(".opt").forEach((b) => (b.disabled = isRunning));
     runBtn.disabled = isRunning;
-    runBtn.textContent = isRunning ? "Running..." : "Run triage benchmark";
+    runBtn.textContent = isRunning ? "Running..." : "Run benchmark";
   }
 
   function resetUI() {
@@ -94,22 +111,16 @@
     benchProgressFill.style.width = "0%";
     ticketLabel.textContent = "";
     ticketFeed.innerHTML = "";
+    qtableBody.innerHTML = "";
+    resultsSection.classList.add("hidden");
+    resultsBody.innerHTML = "";
+    resultsFile.textContent = "";
     feedCount = 0;
-    currentTicket = null;
-
-    questionIds.forEach((qid) => {
-      LANES.forEach((lane) => {
-        qTotals[lane][qid] = { hits: 0, n: 0 };
-        const accCell = document.getElementById(`q-${qid}-${lane}-acc`);
-        if (accCell) accCell.textContent = "—";
-      });
-      const disCell = document.getElementById(`q-${qid}-disagree`);
-      const h2hCell = document.getElementById(`q-${qid}-h2h`);
-      if (disCell) disCell.textContent = "0";
-      if (h2hCell) h2hCell.textContent = "—";
-    });
+    currentItem = null;
+    questionIds = [];
 
     LANES.forEach((lane) => {
+      qTotals[lane] = {};
       confSum[lane] = 0; confN[lane] = 0; latencySum[lane] = 0; latencyN[lane] = 0;
       scoreEls[lane].pct.textContent = "—";
       scoreEls[lane].frac.textContent = "0 / 0 correct decisions";
@@ -120,16 +131,45 @@
     });
   }
 
+  function el(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text != null) node.textContent = text;
+    return node;
+  }
+
+  function buildQuestionTable() {
+    qtableBody.innerHTML = "";
+    questionIds.forEach((qid) => {
+      const tr = el("tr");
+      tr.appendChild(el("td", null, qid));
+      tr.appendChild(el("td", "qtype", questionTypes[qid]));
+      LANES.forEach((lane) => {
+        const td = el("td", `acc lane-${lane}`, "—");
+        td.id = `q-${qid}-${lane}-acc`;
+        tr.appendChild(td);
+      });
+      const dis = el("td", null, "0");
+      dis.id = `q-${qid}-disagree`;
+      tr.appendChild(dis);
+      const h2h = el("td", "h2h-cell", "—");
+      h2h.id = `q-${qid}-h2h`;
+      tr.appendChild(h2h);
+      qtableBody.appendChild(tr);
+    });
+  }
+
   async function run() {
+    if (!selectedDataset) return;
     resetUI();
     setRunning(true);
 
     let resp;
     try {
-      resp = await fetch("/api/triage/start", {
+      resp = await fetch("/api/benchmark/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tickets: selectedCount }),
+        body: JSON.stringify({ dataset: selectedDataset, limit: selectedCount }),
       });
     } catch (err) {
       showError("Could not reach the server.");
@@ -149,7 +189,7 @@
 
   function connectStream() {
     if (eventSource) eventSource.close();
-    eventSource = new EventSource("/api/triage/stream");
+    eventSource = new EventSource("/api/benchmark/stream");
     eventSource.onmessage = (e) => handleEvent(JSON.parse(e.data));
     eventSource.onerror = () => eventSource.close();
   }
@@ -188,63 +228,56 @@
     });
   }
 
-  function updateTokens(tokenTotals, ticketsDone) {
+  function updateTokens(tokenTotals, itemsDone) {
     LANES.forEach((lane) => {
       const t = tokenTotals[lane];
       if (!t) return;
       const total = t.input_tokens + t.output_tokens;
-      const perTicket = ticketsDone > 0 ? Math.round(total / ticketsDone) : 0;
-      scoreEls[lane].tokens.textContent = `${total.toLocaleString()} (${perTicket.toLocaleString()} / ticket)`;
+      const perItem = itemsDone > 0 ? Math.round(total / itemsDone) : 0;
+      scoreEls[lane].tokens.textContent = `${total.toLocaleString()} (${perItem.toLocaleString()} / item)`;
       scoreEls[lane].tokens.title = `input ${t.input_tokens.toLocaleString()} · output ${t.output_tokens.toLocaleString()}`;
     });
   }
 
   function formatPredicted(qid, value) {
-    if (value === null || value === undefined) return "refused";
+    if (value === null || value === undefined) return "—";
     if (typeof value === "boolean") return value ? "yes" : "no";
-    if (qid === "frustration" && typeof value === "number") {
-      return `${value} (${FRUSTRATION_LABELS[value] || ""})`;
-    }
-    if (qid === "impact_scope" && typeof value === "number") {
-      return `${value} (${IMPACT_LABELS[value] || ""})`;
+    const levels = scoreLevels[qid];
+    if (levels && typeof value === "number") {
+      // Rubric levels read "cosmetic: ..." in some datasets; the part before the colon is enough here.
+      const label = String(levels[value] || "").split(":")[0];
+      return `${value} (${label.length > 18 ? label.slice(0, 17) + "…" : label})`;
     }
     return String(value);
   }
 
-  function renderTicketCard(ticket) {
-    const card = document.createElement("div");
-    card.className = "ticket-card";
+  function renderItemCard(item) {
+    const card = el("div", "ticket-card");
+    const head = el("div", "ticket-head");
+    head.appendChild(el("span", "ticket-id", `#${item.index + 1} · ${item.id}`));
+    item.tags.forEach((tag) => head.appendChild(el("span", "ticket-tag", tag)));
+    card.appendChild(head);
+    card.appendChild(el("div", "ticket-message", item.text));
 
-    const msg = document.createElement("div");
-    msg.className = "ticket-message";
-    msg.textContent = `#${ticket.index + 1}: ${ticket.message}`;
-    card.appendChild(msg);
-
-    const rows = document.createElement("div");
-    rows.className = "ticket-rows";
+    const rows = el("div", "ticket-rows");
     questionIds.forEach((qid) => {
-      const answer = ticket.answers[qid];
+      const answer = item.answers[qid];
       if (!answer) return;
-      const row = document.createElement("div");
-      row.className = "ticket-row";
+      const row = el("div", "ticket-row");
       row.dataset.qtype = answer.qtype || questionTypes[qid] || "";
       if (typeFilter !== "all" && row.dataset.qtype !== typeFilter) row.style.display = "none";
-      const qname = document.createElement("span");
-      qname.className = "qname";
-      qname.textContent = qid;
+      const qname = el("span", "qname", qid);
+      qname.appendChild(el("span", "gold", ` = ${formatPredicted(qid, answer.correct)}`));
       row.appendChild(qname);
 
       LANES.forEach((lane) => {
         const p = answer.picks[lane];
-        const span = document.createElement("span");
+        const span = el("span");
         if (p) {
           span.className = p.hit ? "pick-hit" : "pick-miss";
-          const mark = p.hit ? "✓" : "✗";
-          span.textContent = `${NAME[lane]}: ${formatPredicted(qid, p.predicted)} ${mark} `;
-          const conf = document.createElement("span");
-          conf.className = "pick-conf";
-          conf.textContent = p.refused ? "" : `(${(p.confidence * 100).toFixed(0)}%)`;
-          span.appendChild(conf);
+          const shown = p.refused ? "refused" : p.errored ? "error" : formatPredicted(qid, p.predicted);
+          span.textContent = `${NAME[lane]}: ${shown} ${p.hit ? "✓" : "✗"} `;
+          if (!p.refused && !p.errored) span.appendChild(el("span", "pick-conf", `(${(p.confidence * 100).toFixed(0)}%)`));
         }
         row.appendChild(span);
       });
@@ -252,29 +285,126 @@
     });
     card.appendChild(rows);
 
-    if (ticket.tokens || ticket.latency) {
-      const meta = document.createElement("div");
-      meta.className = "ticket-row ticket-tokens";
-      meta.appendChild(document.createElement("span"));
+    if (item.tokens || item.latency) {
+      const meta = el("div", "ticket-row ticket-tokens");
+      meta.appendChild(el("span"));
       LANES.forEach((lane) => {
-        const span = document.createElement("span");
         const parts = [];
-        if (ticket.latency && ticket.latency[lane] != null) parts.push(formatMs(ticket.latency[lane]));
-        const t = ticket.tokens && ticket.tokens[lane];
+        if (item.latency && item.latency[lane] != null) parts.push(formatMs(item.latency[lane]));
+        const t = item.tokens && item.tokens[lane];
         if (t) parts.push(`${t.input_tokens} in / ${t.output_tokens} out tok`);
-        span.textContent = parts.length ? `${NAME[lane]}: ${parts.join(" · ")}` : "";
-        meta.appendChild(span);
+        meta.appendChild(el("span", null, parts.length ? `${NAME[lane]}: ${parts.join(" · ")}` : ""));
       });
       card.appendChild(meta);
     }
 
     ticketFeed.insertBefore(card, ticketFeed.firstChild);
     feedCount += 1;
-    if (feedCount > 40) {
-      while (ticketFeed.children.length > 40) {
-        ticketFeed.removeChild(ticketFeed.lastChild);
+    while (ticketFeed.children.length > 40) ticketFeed.removeChild(ticketFeed.lastChild);
+  }
+
+  // ---- Final results -------------------------------------------------------
+
+  const HIGHER_BETTER = new Set(["accuracy", "macro_f1", "precision", "recall", "f1", "auc", "within_one", "qwk"]);
+  const LOWER_BETTER = new Set(["ece", "brier", "mae", "p50", "p95", "per_item", "refusals", "errors"]);
+  const PERCENT = new Set(["accuracy", "avg_confidence", "within_one", "precision", "recall"]);
+  const METRIC_LABEL = {
+    accuracy: "accuracy", avg_confidence: "avg confidence", ece: "calibration error (ECE)",
+    refusals: "refusals", errors: "failed calls", p50: "latency p50", p95: "latency p95",
+    per_item: "tokens / item", macro_f1: "macro F1", precision: "precision", recall: "recall",
+    f1: "F1", brier: "Brier score", auc: "AUC", mae: "mean abs error", within_one: "within one level",
+    qwk: "weighted kappa (QWK)",
+  };
+  const QUESTION_METRICS = {
+    choice: ["accuracy", "macro_f1", "ece"],
+    noul: ["accuracy", "precision", "recall", "f1", "auc", "brier", "ece"],
+    score: ["accuracy", "within_one", "mae", "qwk", "ece"],
+  };
+
+  function formatMetric(key, value) {
+    if (value === null || value === undefined) return "—";
+    if (PERCENT.has(key)) return `${(value * 100).toFixed(1)}%`;
+    if (key === "p50" || key === "p95") return formatMs(value);
+    if (key === "per_item") return Math.round(value).toLocaleString();
+    if (Number.isInteger(value)) return String(value);
+    return value.toFixed(3);
+  }
+
+  function metricTable(title, rows, lanes) {
+    // rows: [{key, label, values: {lane: number|null}}]
+    const wrap = el("div", "metric-block");
+    wrap.appendChild(el("h3", null, title));
+    const scroll = el("div", "table-scroll");
+    const table = el("table", "qtable metric-table");
+    const head = el("tr");
+    head.appendChild(el("th", null, "metric"));
+    lanes.forEach((lane) => head.appendChild(el("th", null, NAME[lane])));
+    table.appendChild(el("thead")).appendChild(head);
+    const body = el("tbody");
+    rows.forEach((row) => {
+      const tr = el("tr");
+      tr.appendChild(el("td", null, row.label));
+      const nums = lanes.map((lane) => row.values[lane]).filter((v) => v !== null && v !== undefined);
+      const better = HIGHER_BETTER.has(row.key) ? Math.max : LOWER_BETTER.has(row.key) ? Math.min : null;
+      const best = better && nums.length > 1 ? better(...nums) : null;
+      lanes.forEach((lane) => {
+        const v = row.values[lane];
+        const td = el("td", `lane-${lane}`, formatMetric(row.key, v));
+        if (best !== null && v === best && new Set(nums).size > 1) td.classList.add("best");
+        tr.appendChild(td);
+      });
+      body.appendChild(tr);
+    });
+    table.appendChild(body);
+    scroll.appendChild(table);
+    wrap.appendChild(scroll);
+    return wrap;
+  }
+
+  function renderResults(event) {
+    const m = event.metrics;
+    const lanes = LANES.filter((lane) => m.overall[lane]);
+    resultsBody.innerHTML = "";
+    resultsFile.textContent = `saved to ${event.results_file}`;
+    const runName = event.results_file.split("/").pop().replace(/\.jsonl$/, "");
+    exportXlsx.href = `/api/results/${encodeURIComponent(runName)}.xlsx`;
+
+    const overallRows = ["accuracy", "avg_confidence", "ece", "refusals", "errors"].map((key) => ({
+      key, label: METRIC_LABEL[key], values: Object.fromEntries(lanes.map((l) => [l, m.overall[l][key]])),
+    }));
+    ["p50", "p95"].forEach((key) => overallRows.push({
+      key, label: METRIC_LABEL[key], values: Object.fromEntries(lanes.map((l) => [l, m.overall[l].latency_ms[key]])),
+    }));
+    overallRows.push({
+      key: "per_item", label: METRIC_LABEL.per_item,
+      values: Object.fromEntries(lanes.map((l) => [l, m.overall[l].tokens.per_item])),
+    });
+
+    const grid = el("div", "metric-grid");
+    grid.appendChild(metricTable(`Overall (${m.items} items)`, overallRows, lanes));
+
+    Object.entries(m.questions).forEach(([qid, q]) => {
+      const rows = QUESTION_METRICS[q.type].map((key) => ({
+        key, label: METRIC_LABEL[key], values: Object.fromEntries(lanes.map((l) => [l, q.models[l][key]])),
+      }));
+      if (q.type === "choice") {
+        const classes = Object.keys(q.models[lanes[0]].per_class);
+        classes.forEach((cls) => rows.push({
+          key: "f1", label: `F1 · ${cls} (${q.models[lanes[0]].per_class[cls].support})`,
+          values: Object.fromEntries(lanes.map((l) => [l, q.models[l].per_class[cls].f1])),
+        }));
       }
-    }
+      grid.appendChild(metricTable(`${qid} (${q.type})`, rows, lanes));
+    });
+
+    const tagRows = Object.entries(m.by_tag).map(([tag, t]) => ({
+      key: "accuracy", label: `${tag} (${t.items})`,
+      values: Object.fromEntries(lanes.map((l) => [l, t.models[l].accuracy])),
+    }));
+    if (tagRows.length) grid.appendChild(metricTable("Accuracy by tag", tagRows, lanes));
+
+    resultsBody.appendChild(grid);
+    resultsSection.classList.remove("hidden");
   }
 
   function handleEvent(event) {
@@ -287,28 +417,34 @@
         showError(`${NAME[event.model] || event.model} unavailable: ${event.message}`);
         break;
 
+      case "model_error":
+        showError(`${NAME[event.model] || event.model} failed on item ${event.item + 1}: ${event.message}`);
+        break;
+
       case "benchmark_started":
-        totalTickets = event.tickets;
+        totalItems = event.items;
         questionIds = Object.keys(event.questions);
         questionTypes = event.questions;
+        scoreLevels = event.score_levels || {};
         questionIds.forEach((qid) => LANES.forEach((lane) => (qTotals[lane][qid] = { hits: 0, n: 0 })));
-        benchStatus.textContent = `Running ${event.tickets} synthetic tickets...`;
+        buildQuestionTable();
+        benchStatus.textContent = `Running ${event.title}: ${event.items} items...`;
         break;
 
-      case "ticket_start":
-        ticketLabel.textContent = `— ticket ${event.ticket + 1} / ${event.total}`;
-        benchProgressFill.style.width = `${(event.ticket / event.total) * 100}%`;
-        currentTicket = { index: event.ticket, message: event.message, labels: event.labels, answers: {} };
+      case "item_start":
+        ticketLabel.textContent = `— item ${event.item + 1} / ${event.total}`;
+        benchProgressFill.style.width = `${(event.item / event.total) * 100}%`;
+        currentItem = { index: event.item, id: event.id, text: event.text, tags: event.tags, answers: {} };
         break;
 
-      case "ticket_timing":
+      case "item_timing":
         LANES.forEach((lane) => {
           const ms = event.latency_ms[lane];
           if (ms == null) return;
           latencySum[lane] += ms;
           latencyN[lane] += 1;
         });
-        if (currentTicket && currentTicket.index === event.ticket) currentTicket.latency = event.latency_ms;
+        if (currentItem && currentItem.index === event.item) currentItem.latency = event.latency_ms;
         updateLatency();
         break;
 
@@ -318,7 +454,7 @@
           const p = event.picks[lane];
           if (!p) return;
           qTotals[lane][qid] = event.totals[lane];
-          if (p.refused) return;
+          if (p.refused || p.errored) return;
           confSum[lane] += p.confidence;
           confN[lane] += 1;
         });
@@ -333,23 +469,22 @@
         }
         updateQuestionRow(qid);
         updateOverallScoreboard();
-        if (currentTicket && currentTicket.index === event.ticket) {
-          currentTicket.answers[qid] = event;
-        }
+        if (currentItem && currentItem.index === event.item) currentItem.answers[qid] = event;
         break;
       }
 
-      case "ticket_done":
-        if (currentTicket && currentTicket.index === event.ticket) {
-          currentTicket.tokens = event.tokens;
-          renderTicketCard(currentTicket);
+      case "item_done":
+        if (currentItem && currentItem.index === event.item) {
+          currentItem.tokens = event.tokens;
+          renderItemCard(currentItem);
         }
-        updateTokens(event.token_totals, event.ticket + 1);
+        updateTokens(event.token_totals, event.item + 1);
         break;
 
       case "done":
         benchProgressFill.style.width = "100%";
-        benchStatus.textContent = `Done: ${totalTickets} tickets in ${event.elapsed.toFixed(1)}s`;
+        benchStatus.textContent = `Done: ${totalItems} items in ${event.elapsed.toFixed(1)}s`;
+        renderResults(event);
         setRunning(false);
         break;
 

@@ -185,7 +185,7 @@ header .dim { color: var(--dim); font-weight: 400; }
 }
 
 .score-pct {
-  font-size: 42px;
+  font-size: 28px;
   font-weight: 800;
   line-height: 1.1;
   font-variant-numeric: tabular-nums;
@@ -281,6 +281,30 @@ header .dim { color: var(--dim); font-weight: 400; }
 
 .h2h-cell { font-size: 12px; color: var(--dim); }
 
+.table-scroll { overflow-x: auto; }
+
+.dataset-opt { flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; }
+.opt-sub { font-size: 11px; color: var(--dim); }
+
+.results-wrap.hidden { display: none; }
+.results-file { font-size: 11.5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr));
+  gap: 18px;
+}
+
+@media (max-width: 600px) {
+  .app { padding: 16px; }
+  .metric-grid { grid-template-columns: 1fr; }
+  .ticket-row { grid-template-columns: 1fr; }
+}
+
+.metric-block h3 { font-size: 12.5px; margin: 0 0 6px; color: var(--text); font-weight: 600; }
+.metric-table td { font-weight: 500; }
+.metric-table td.best { font-weight: 800; text-decoration: underline; text-underline-offset: 3px; }
+
 .bench-feed-wrap {
   background: var(--panel);
   border: 1px solid var(--border);
@@ -308,19 +332,41 @@ header .dim { color: var(--dim); font-weight: 400; }
   color: var(--text);
   margin-bottom: 8px;
   line-height: 1.4;
+  white-space: pre-wrap;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.ticket-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-size: 11px;
+}
+
+.ticket-id { color: var(--dim); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+.ticket-tag {
+  color: var(--dim);
+  border: 1px solid var(--border);
+  padding: 0 6px;
+  border-radius: 999px;
 }
 
 .ticket-rows { display: flex; flex-direction: column; gap: 3px; }
 
 .ticket-row {
   display: grid;
-  grid-template-columns: 110px repeat(4, 1fr);
+  grid-template-columns: 150px repeat(4, 1fr);
   gap: 8px;
   font-size: 11.5px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
-.ticket-row .qname { color: var(--dim); }
+.ticket-row .qname { color: var(--dim); overflow-wrap: anywhere; }
+.ticket-row .gold { color: var(--text); }
 .ticket-row .pick-hit { color: var(--accent-2); }
 .ticket-row .pick-miss { color: var(--danger); }
 .ticket-row .pick-conf { color: var(--dim); }
@@ -330,4 +376,23 @@ header .dim { color: var(--dim); font-weight: 400; }
   font-size: 11px;
   color: var(--dim);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+a.opt { text-decoration: none; }
+
+/* "Save as PDF" prints the scoreboard, question table and results on a light page. */
+@media print {
+  :root {
+    --bg: #ffffff; --panel: #ffffff; --border: #c9ced6; --text: #111418; --dim: #555d69;
+    --jev-color: #1f5fd6; --laya-color: #1a7f37; --vega-color: #8250df; --openai-color: #bc4c00;
+  }
+  body { background: #ffffff; }
+  .app { max-width: none; padding: 0; }
+  .control-bar, .error-banner, .bench-progress, .ticket-feed-wrap, .export-actions { display: none !important; }
+  .scoreboard { grid-template-columns: repeat(4, 1fr); }
+  .score-pct { font-size: 28px; }
+  .qtable-wrap, .score-card, .metric-block { break-inside: avoid; }
+  .metric-grid { grid-template-columns: 1fr 1fr; }
+  .table-scroll { overflow: visible; }
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }

@@ -1,71 +1,47 @@
-"""Streaming ticket-triage benchmark: the same synthetic ticket set run through
-Jev, Laya, Vega and the OpenAI Decisions API, one call per ticket, scored against
-known-correct labels.
+"""Streaming benchmark: one golden dataset run through Jev, Laya, Vega and the OpenAI
+Decisions API, one call per item per model, scored against the dataset's known answers.
 
-Each ticket is an independent decision, so both models simply answer the exact
-same state -- no path-dependency to work around. laya.presets.triage_questions()
-bundles three question types at once (choice/noul/score) in a single call, so
-this exercises the full shape of the typed-decision API.
+Each item is an independent decision, so every model answers the exact same state --
+no path-dependency to work around. All of a dataset's questions (any mix of
+choice/noul/score) are asked in a single call, so this exercises the full shape of
+the typed-decision API.
 
-`impact_scope` is added on top of the triage preset as a second, independent
-score-type question (how many people the issue affects, unrelated to tone or
-time pressure) -- with only one score question in the set, there's no way to
-tell whether a model's weakness is specific to "frustration" or a general
-pattern with score-type questions. Every level, including 0, is worded as
-something present and has a matching phrase planted in the ticket, so a miss
-can't be blamed on negated wording or on level 0 having nothing to match.
+Running totals are streamed while the run is in progress; the full metric set
+(metrics.compute) is computed once at the end from the per-item records, which are
+also written to results/ so a run can be rescored later without calling the models.
 """
-import random
+import json
 import time
+from datetime import datetime
+from pathlib import Path
 
 from decision_models import get_model
-from laya.presets import triage_questions
-from ticket_gen import generate_ticket
+from golden import load_dataset, sample_items
+from metrics import compute, pick_and_confidence
 
 LANES = ("jev", "laya", "vega", "openai")
+RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
 
 
-def _build_questions():
-    questions = dict(triage_questions())
-    questions["impact_scope"] = {
-        "type": "score",
-        "instructions": "How many people does the issue in `message` affect?",
-        "criteria": ["just the sender personally", "the sender's team", "the whole company or its customers"],
-    }
-    return questions
+def _answer_safely(model, state, questions):
+    """One model call; a failed call becomes an "error" answer instead of ending the run."""
+    t0 = time.perf_counter()
+    try:
+        answers, error = model.answer(state, questions), None
+    except Exception as exc:
+        answers, error = {qid: {"type": "error"} for qid in questions}, str(exc)
+    latency = (time.perf_counter() - t0) * 1000
+    usage = (model.last_usage or {}) if error is None else {"input_tokens": 0, "output_tokens": 0}
+    return answers, latency, dict(usage), error
 
 
-QUESTIONS = _build_questions()
-N_BINS = 5
-SCORE_QUESTIONS = {qid for qid, q in QUESTIONS.items() if q["type"] == "score"}
+def run_benchmark_stream(dataset_name, emit, limit=None, seed=0):
+    dataset = load_dataset(dataset_name)
+    meta = dataset["meta"]
+    questions = meta["questions"]
+    context = meta.get("context") or {}
+    items = sample_items(dataset, limit, seed)
 
-
-def _pick_and_confidence(ans, qtype):
-    """Value the model actually predicted, and the probability mass it put on that value.
-
-    Deliberately not the vendor's own "confidence" field -- that metric reads
-    oddly near 50/50 calls. This is always "probability assigned to whatever
-    ended up being predicted," consistent across choice/noul/score so
-    calibration bucketing means the same thing for all three.
-
-    A refusal (OpenAI may decline a question) predicts nothing: (None, 0.0).
-    """
-    if ans["type"] == "refusal":
-        return None, 0.0
-    if qtype == "choice":
-        predicted = ans["choice"]
-        return predicted, ans["probabilities"].get(predicted, 0.0)
-    if qtype == "noul":
-        predicted = ans["noul"] >= 0.5
-        return predicted, (ans["noul"] if predicted else 1.0 - ans["noul"])
-    # score: the most likely rubric level. Rounding the expected value instead would
-    # drag a spread-out distribution toward the middle level, even when the model's
-    # own top pick is an extreme (e.g. {0: .55, 1: .32, 2: .13} -> E=0.58 -> 1).
-    level, prob = max(ans["probabilities"].items(), key=lambda kv: kv[1])
-    return int(level), prob
-
-
-def run_triage_stream(n_tickets, emit, seed=None):
     models = {}
     for name in LANES:
         emit({"type": "status", "message": f"Loading {name}..."})
@@ -78,118 +54,94 @@ def run_triage_stream(n_tickets, emit, seed=None):
         emit({"type": "error", "message": "No usable decision models available."})
         return
 
-    rng = random.Random(seed)
-
-    totals = {name: {qid: {"hits": 0, "n": 0} for qid in QUESTIONS} for name in models}
-    calibration = {
-        name: {qid: [{"hits": 0, "n": 0} for _ in range(N_BINS)] for qid in QUESTIONS}
-        for name in models
-    }
-    score_error = {name: {qid: 0.0 for qid in SCORE_QUESTIONS} for name in models}
-    score_n = {name: {qid: 0 for qid in SCORE_QUESTIONS} for name in models}
-    refusals = {name: {qid: 0 for qid in QUESTIONS} for name in models}
-    disagreements = {qid: 0 for qid in QUESTIONS}
-    disagreement_wins = {qid: {name: 0 for name in models} for qid in QUESTIONS}
-    latency_sum = {name: 0.0 for name in models}
-    latency_n = {name: 0 for name in models}
+    totals = {name: {qid: {"hits": 0, "n": 0} for qid in questions} for name in models}
+    disagreements = {qid: 0 for qid in questions}
+    disagreement_wins = {qid: {name: 0 for name in models} for qid in questions}
     token_totals = {name: {"input_tokens": 0, "output_tokens": 0} for name in models}
+    records = []
+
+    RESULTS_DIR.mkdir(exist_ok=True)
+    results_path = RESULTS_DIR / f"{datetime.now():%Y%m%d-%H%M%S}-{meta['name']}.jsonl"
+    results_file = results_path.open("w", encoding="utf-8")
+    results_file.write(json.dumps({"run": {
+        "dataset": meta["name"], "title": meta["title"], "started_at": datetime.now().isoformat(timespec="seconds"),
+        "models": list(models), "limit": limit, "seed": seed, "questions": questions,
+    }}, ensure_ascii=False) + "\n")
 
     start = time.monotonic()
-    emit({"type": "benchmark_started", "tickets": n_tickets, "models": list(models.keys()),
-          "questions": {qid: q["type"] for qid, q in QUESTIONS.items()}})
+    emit({
+        "type": "benchmark_started", "dataset": meta["name"], "title": meta["title"],
+        "items": len(items), "models": list(models),
+        "questions": {qid: q["type"] for qid, q in questions.items()},
+        "score_levels": {qid: q["criteria"] for qid, q in questions.items() if q["type"] == "score"},
+    })
 
-    for i in range(n_tickets):
-        ticket = generate_ticket(rng)
-        emit({
-            "type": "ticket_start", "ticket": i, "total": n_tickets,
-            "message": ticket["message"], "labels": ticket["labels"],
-        })
-
-        state = {"message": ticket["message"]}
-        answers = {}
-        latencies = {}
-        for name, model in models.items():
-            t0 = time.perf_counter()
-            answers[name] = model.answer(state, QUESTIONS)
-            latencies[name] = (time.perf_counter() - t0) * 1000
-            latency_sum[name] += latencies[name]
-            latency_n[name] += 1
-            usage = model.last_usage or {}
-            for k in token_totals[name]:
-                token_totals[name][k] += usage.get(k, 0)
-
-        emit({"type": "ticket_timing", "ticket": i, "latency_ms": {n: round(v, 1) for n, v in latencies.items()}})
-
-        for qid, qdef in QUESTIONS.items():
-            qtype = qdef["type"]
-            true_val = ticket["labels"][qid]
-            picks = {}
-            for name in models:
-                ans = answers[name][qid]
-                predicted, conf = _pick_and_confidence(ans, qtype)
-                refused = ans["type"] == "refusal"
-                hit = not refused and predicted == true_val
-
-                # A refusal counts as a miss for accuracy but stays out of calibration and
-                # score error, since it carries no probability.
-                totals[name][qid]["n"] += 1
-                totals[name][qid]["hits"] += 1 if hit else 0
-                if refused:
-                    refusals[name][qid] += 1
-                else:
-                    idx = min(int(conf * N_BINS), N_BINS - 1)
-                    calibration[name][qid][idx]["n"] += 1
-                    calibration[name][qid][idx]["hits"] += 1 if hit else 0
-                    if qtype == "score":
-                        score_error[name][qid] += abs(ans["score"] - true_val)
-                        score_n[name][qid] += 1
-
-                picks[name] = {"predicted": predicted, "hit": hit, "confidence": round(conf, 4)}
-                if refused:
-                    picks[name]["refused"] = True
-
-            disagree = len(set(str(p["predicted"]) for p in picks.values())) > 1
-            if disagree:
-                disagreements[qid] += 1
-                for name, p in picks.items():
-                    if p["hit"]:
-                        disagreement_wins[qid][name] += 1
-
+    try:
+        for i, item in enumerate(items):
             emit({
-                "type": "answer", "ticket": i, "question": qid, "qtype": qtype,
-                "correct": true_val, "picks": picks, "disagree": disagree,
-                "totals": {name: dict(totals[name][qid]) for name in models},
-                "disagreements": disagreements[qid],
-                "disagreement_wins": dict(disagreement_wins[qid]),
+                "type": "item_start", "item": i, "total": len(items), "id": item["id"],
+                "text": "\n\n".join(str(v) for v in item["input"].values()),
+                "tags": item["tags"], "labels": item["labels"],
             })
 
-        emit({
-            "type": "ticket_done", "ticket": i,
-            "tokens": {name: models[name].last_usage for name in models},
-            "token_totals": {name: dict(token_totals[name]) for name in models},
-        })
+            state = {**context, **item["input"]}
+            record = {"id": item["id"], "tags": item["tags"], "labels": item["labels"],
+                      "answers": {}, "latency_ms": {}, "usage": {}}
+            for name, model in models.items():
+                answers, latency, usage, error = _answer_safely(model, state, questions)
+                record["answers"][name] = answers
+                record["latency_ms"][name] = round(latency, 1)
+                record["usage"][name] = usage
+                for k in token_totals[name]:
+                    token_totals[name][k] += usage.get(k, 0)
+                if error:
+                    record.setdefault("errors", {})[name] = error
+                    emit({"type": "model_error", "model": name, "item": i, "message": error})
 
-    mean_error = {
-        name: {
-            qid: round(score_error[name][qid] / score_n[name][qid], 4) if score_n[name][qid] else None
-            for qid in SCORE_QUESTIONS
-        }
-        for name in models
-    }
-    avg_latency = {
-        name: round(latency_sum[name] / latency_n[name], 1) if latency_n[name] else 0.0
-        for name in models
-    }
+            emit({"type": "item_timing", "item": i, "latency_ms": record["latency_ms"]})
+
+            for qid, qdef in questions.items():
+                gold = item["labels"][qid]
+                picks = {}
+                for name in models:
+                    ans = record["answers"][name][qid]
+                    predicted, conf = pick_and_confidence(ans, qdef["type"])
+                    hit = predicted is not None and predicted == gold
+                    totals[name][qid]["n"] += 1
+                    totals[name][qid]["hits"] += hit
+                    picks[name] = {"predicted": predicted, "hit": hit, "confidence": round(conf, 4)}
+                    if ans["type"] == "refusal":
+                        picks[name]["refused"] = True
+                    elif ans["type"] == "error":
+                        picks[name]["errored"] = True
+
+                disagree = len({str(p["predicted"]) for p in picks.values()}) > 1
+                if disagree:
+                    disagreements[qid] += 1
+                    for name, p in picks.items():
+                        disagreement_wins[qid][name] += p["hit"]
+
+                emit({
+                    "type": "answer", "item": i, "question": qid, "qtype": qdef["type"],
+                    "correct": gold, "picks": picks, "disagree": disagree,
+                    "totals": {name: dict(totals[name][qid]) for name in models},
+                    "disagreements": disagreements[qid],
+                    "disagreement_wins": dict(disagreement_wins[qid]),
+                })
+
+            records.append(record)
+            results_file.write(json.dumps(record, ensure_ascii=False) + "\n")
+            results_file.flush()
+            emit({
+                "type": "item_done", "item": i, "tokens": record["usage"],
+                "token_totals": {name: dict(token_totals[name]) for name in models},
+            })
+    finally:
+        results_file.close()
 
     emit({
         "type": "done",
         "elapsed": round(time.monotonic() - start, 2),
-        "totals": totals,
-        "calibration": calibration,
-        "mean_abs_error": mean_error,
-        "disagreements": disagreements,
-        "disagreement_wins": disagreement_wins,
-        "avg_latency_ms": avg_latency,
-        "token_totals": token_totals,
-        "refusals": refusals,
+        "results_file": str(results_path.relative_to(RESULTS_DIR.parent)),
+        "metrics": compute(questions, records, list(models)),
     })

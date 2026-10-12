@@ -7,15 +7,17 @@ import dotenv
 from flask import Flask, Response, jsonify, render_template, request
 
 from decision_models import get_model
-from triage_engine import LANES, QUESTIONS as TRIAGE_QUESTIONS, run_triage_stream
+from benchmark_engine import LANES, RESULTS_DIR, run_benchmark_stream
+from export import build_workbook
+from golden import list_datasets
+from metrics import load_run
 
 dotenv.load_dotenv()
 
 app = Flask(__name__)
 
-_triage_lock = threading.Lock()
-_triage_state = {"running": False, "queue": None}
-MAX_TRIAGE_TICKETS = 500
+_run_lock = threading.Lock()
+_run_state = {"running": False, "queue": None}
 # Display name and where each model runs, for the dashboard.
 MODEL_INFO = {
     "jev": ("Jev", "cloud"),
@@ -27,47 +29,54 @@ MODEL_INFO = {
 
 @app.route("/")
 def index():
-    question_types = {qid: q["type"] for qid, q in TRIAGE_QUESTIONS.items()}
-    return render_template("triage.html", lanes=LANES, model_info=MODEL_INFO, questions=question_types)
+    return render_template("dashboard.html", lanes=LANES, model_info=MODEL_INFO, datasets=list_datasets())
 
 
-def _run_triage(n_tickets):
-    q = _triage_state["queue"]
+@app.route("/api/datasets")
+def api_datasets():
+    return jsonify(datasets=list_datasets())
+
+
+def _run_benchmark(dataset, limit):
+    q = _run_state["queue"]
 
     def emit(event):
         q.put(event)
 
     try:
-        run_triage_stream(n_tickets, emit)
+        run_benchmark_stream(dataset, emit, limit=limit)
     except Exception as exc:
         emit({"type": "error", "message": str(exc)})
     finally:
         emit({"type": "stream_end"})
-        _triage_state["running"] = False
+        _run_state["running"] = False
 
 
-@app.route("/api/triage/start", methods=["POST"])
-def api_triage_start():
+@app.route("/api/benchmark/start", methods=["POST"])
+def api_benchmark_start():
     data = request.get_json(force=True) or {}
-    n_tickets = data.get("tickets")
+    dataset = data.get("dataset")
+    limit = data.get("limit")
 
-    if not isinstance(n_tickets, int) or not (1 <= n_tickets <= MAX_TRIAGE_TICKETS):
-        return jsonify(error=f"Ticket count must be between 1 and {MAX_TRIAGE_TICKETS}."), 400
+    if dataset not in {d["name"] for d in list_datasets()}:
+        return jsonify(error=f"Unknown dataset: {dataset!r}."), 400
+    if limit is not None and (not isinstance(limit, int) or limit < 1):
+        return jsonify(error="limit must be a positive integer, or null for every item."), 400
 
-    with _triage_lock:
-        if _triage_state["running"]:
-            return jsonify(error="A triage run is already in progress. Wait for it to finish."), 409
-        _triage_state["running"] = True
-        _triage_state["queue"] = queue.Queue()
-        thread = threading.Thread(target=_run_triage, args=(n_tickets,), daemon=True)
+    with _run_lock:
+        if _run_state["running"]:
+            return jsonify(error="A benchmark run is already in progress. Wait for it to finish."), 409
+        _run_state["running"] = True
+        _run_state["queue"] = queue.Queue()
+        thread = threading.Thread(target=_run_benchmark, args=(dataset, limit), daemon=True)
         thread.start()
 
     return jsonify(ok=True)
 
 
-@app.route("/api/triage/stream")
-def api_triage_stream():
-    q = _triage_state["queue"]
+@app.route("/api/benchmark/stream")
+def api_benchmark_stream():
+    q = _run_state["queue"]
     if q is None:
         return Response("", mimetype="text/event-stream")
 
@@ -81,12 +90,28 @@ def api_triage_stream():
     return Response(gen(), mimetype="text/event-stream")
 
 
+@app.route("/api/results/<name>.xlsx")
+def api_results_xlsx(name):
+    # <name> can't contain "/", so this only ever reads a file directly inside results/.
+    path = RESULTS_DIR / f"{name}.jsonl"
+    if not path.is_file():
+        return jsonify(error=f"No saved run named {name!r}."), 404
+    run, records = load_run(path)
+    if not records:
+        return jsonify(error="That run has no finished items yet."), 400
+    return Response(
+        build_workbook(run, records),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{name}.xlsx"'},
+    )
+
+
 def _prewarm_local_models():
     """Load the local models (Laya, Vega) at server startup instead of on the user's first click.
 
     Building the ModernBERT-large encoder from config (before the downloaded checkpoint
     weights overwrite it) takes ~20s regardless of the Hugging Face cache; doing this in
-    the background while the server starts hides that cost from the first triage run.
+    the background while the server starts hides that cost from the first benchmark run.
     Vega's first load also downloads its checkpoint from Hugging Face.
     """
     for name, label in (("laya", "Laya"), ("vega", "Vega")):
